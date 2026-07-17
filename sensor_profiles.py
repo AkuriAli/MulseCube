@@ -9,7 +9,7 @@ SENSORS = {
         "protocol": "1-Wire",
         "unit": "°C",
         "identifier_type": "family_code",
-        "family_code": "28",          # shared by ALL DS18B20s on the bus
+        "family_code": "28",          # shared by ALL DS18B20s
         "driver": "ds18b20_driver",
         "value_fields": ["temperature"],
     },
