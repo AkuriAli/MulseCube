@@ -1,27 +1,85 @@
+import time
 
-# main.py = the conductor that calls everything else in order
-
-
-from sensor_detector import scan_all_sensors
+from sensor_profiles import SENSORS
 from drivers import ds18b20_driver
 from standardizer import standardize
 
-print("Scanning for connected sensors...\n")
 
-detected = scan_all_sensors()
+def display_menu():
+    """Prints the list of known sensor profiles for the user to choose from."""
+    print("\nSensor detected on port. Please confirm which sensor this is:")
+    print("-------------------------------------------------------------")
+    for i, (key, profile) in enumerate(SENSORS.items(), start=1):
+        print(f"{i}. {profile['name']}  ({profile['protocol']})")
+    print("0. Exit")
 
-if not detected:
-    print("No sensors detected.")
-else:
-    for sensor_key, profile, device_address in detected:
-        print(f"Sensor Detected: {profile['name']} ({device_address})")
-        print(f"  Protocol: {profile['protocol']}")
 
-        if profile["driver"] == "ds18b20_driver":
+def get_user_selection():
+    """Loops until the user enters a valid menu choice. Returns the sensor key, or None to exit."""
+    keys = list(SENSORS.keys())
+
+    while True:
+        display_menu()
+        choice = input("\nEnter number: ").strip()
+
+        if choice == "0":
+            return None
+
+        if choice.isdigit() and 1 <= int(choice) <= len(keys):
+            return keys[int(choice) - 1]
+
+        print("Invalid selection, please try again.")
+
+
+def run_ds18b20_loop():
+    """
+    Reads DS18B20 values on a loop and prints standardized readings.
+    Uses the real 1-Wire bus if available (e.g. on the Pi with a sensor wired up),
+    otherwise falls back to mock values automatically (see ds18b20_driver.py).
+    """
+    device_list = ds18b20_driver.scan_for_ds18b20()
+
+    if not device_list:
+        print("\nNo DS18B20 device found on the 1-Wire bus. Check wiring and try again.")
+        return
+
+    device_address = device_list[0]
+    profile = SENSORS["ds18b20"]
+
+    print(f"\nReading from: {device_address}")
+    print("Press Ctrl+C to stop.\n")
+
+    try:
+        while True:
             raw_temp = ds18b20_driver.read_raw(device_address)
-            if raw_temp is None:
-                print("  Read failed (bad checksum or disconnected).\n")
-                continue
 
-            record = standardize(sensor_key, profile, "temperature", raw_temp)
-            print(f"  Standardized reading: {record}\n")
+            if raw_temp is None:
+                print("Read failed (bad checksum or disconnected).")
+            else:
+                record = standardize("ds18b20", profile, "temperature", raw_temp)
+                print(f"Reading: {record}")
+
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+
+
+def main():
+    sensor_key = get_user_selection()
+
+    if sensor_key is None:
+        print("Exiting.")
+        return
+
+    profile = SENSORS[sensor_key]
+    print(f"\nSelected: {profile['name']} ({profile['protocol']})")
+
+    if sensor_key == "ds18b20":
+        run_ds18b20_loop()
+    else:
+        print(f"\nNo driver implemented yet for {profile['name']}. Coming soon.")
+
+
+if __name__ == "__main__":
+    main()
