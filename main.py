@@ -69,18 +69,17 @@ def run_dht11_loop():
     """
     Reads DHT11 values on a loop and prints standardized readings for
     both temperature and humidity. Uses the real kernel IIO device if the
-    dtoverlay is enabled and a sensor is wired up, otherwise falls back
-    to mock values automatically (see dht11_driver.py).
+    dtoverlay is enabled and a sensor is wired up.
     """
     profile = SENSORS["dht11"]
- 
+
     print(f"\nExpected wiring: DHT11 data pin -> GPIO{profile['identifier']}")
     print("Press Ctrl+C to stop.\n")
- 
+
     try:
         while True:
             temperature, humidity = dht11_driver.read_raw()
- 
+
             if temperature is None or humidity is None:
                 print("Values not available (sensor not detected or read failed).")
             else:
@@ -88,8 +87,12 @@ def run_dht11_loop():
                 humidity_record = standardize("dht11", profile, "humidity", humidity)
                 print(f"Reading: {temp_record}")
                 print(f"Reading: {humidity_record}")
- 
+
             time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+
 
 def main():
     sensor_key = get_user_selection()
@@ -103,6 +106,8 @@ def main():
 
     if sensor_key == "ds18b20":
         run_ds18b20_loop()
+    elif sensor_key == "dht11":
+        run_dht11_loop()
     else:
         print(f"\nNo driver implemented yet for {profile['name']}. Coming soon.")
 
