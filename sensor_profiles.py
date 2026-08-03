@@ -31,7 +31,7 @@ SENSORS = {
         "protocol": "GPIO-Timing",
         "unit": ["°C", "%"],
         "identifier_type": "manual_gpio",   # no auto-detect possible
-        "identifier": None,
+        "identifier": 17,
         "driver": "dht11_driver",
         "value_fields": ["temperature", "humidity"],
     }
