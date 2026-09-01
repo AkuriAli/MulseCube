@@ -1,0 +1,107 @@
+[
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.26,
+    "timestamp": 1788250885.1048791
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.5,
+    "timestamp": 1788250887.114857
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 25.01,
+    "timestamp": 1788250889.1166158
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.17,
+    "timestamp": 1788250891.118244
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 25.86,
+    "timestamp": 1788250997.0695899
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.98,
+    "timestamp": 1788250999.072172
+  },
+  {
+    "model": "DS18B20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.68,
+    "timestamp": 1788251001.0739608
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 25.6,
+    "timestamp": 1788251268.4241319
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 53.0,
+    "timestamp": 1788251268.427895
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 25.7,
+    "timestamp": 1788251270.4609678
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 52.0,
+    "timestamp": 1788251270.463113
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 25.9,
+    "timestamp": 1788251272.4939857
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 52.0,
+    "timestamp": 1788251272.4961433
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 26.1,
+    "timestamp": 1788251274.5278609
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 51.0,
+    "timestamp": 1788251274.5300333
+  }
+]

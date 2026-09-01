@@ -1,37 +1,73 @@
-# sensor_detector.py = the 'scanner' that figures out what's plugged in
-
-
-
-from sensor_profiles import SENSORS, get_profile_by_family_code
+from sensor import Sensor
+from profile_registry import find_by_family_code, get_all_profiles
 from drivers import ds18b20_driver
 
 
-def scan_all_sensors():
+def auto_detect_sensors():
     """
-    Sequentially checks each supported protocol for connected sensors.
-    Returns a list of (sensor_key, profile, device_address) tuples.
-    Currently implements 1-Wire (DS18B20). I2C/GPIO scanning to be added
-    once BME280 / DHT11 wiring is in place and I have setup the Raspberry Pi to support those protocols.
+    Scans every protocol capable of self-identification and builds a Sensor
+    object (with its profile already attached) for each match found.
+    Returns a list of identified Sensor objects - empty if nothing was found.
     """
-    found = []
+    identified = []
 
-    # --- 1-Wire scan ---
+    # --- 1-Wire scan (DS18B20, and any future 1-Wire sensors) ---
     for device_address in ds18b20_driver.scan_for_ds18b20():
         family_code = device_address.split("-")[0]
-        sensor_key, profile = get_profile_by_family_code(family_code)
+        profile = find_by_family_code(family_code)
+
         if profile:
-            found.append((sensor_key, profile, device_address))
+            sensor = Sensor.digital(
+                name=profile.model,
+                family=profile.model,
+                familycode=family_code,
+                protocol=profile.protocol,
+                device_address=device_address,
+            )
+            sensor.apply_profile(profile)
+            identified.append(sensor)
 
-    # --- I2C scan: TODO once BME280 is wired up ---
+    # --- I2C scan: TODO once BME280 is wired up (needs smbus2) ---
+
+    return identified
 
 
+def manual_fallback_selection():
+    """
+    Used when auto-detection finds nothing - lets the user confirm what's
+    connected, the same menu flow you already had. This is the only route
+    for sensors that can NEVER self-identify (e.g. DHT11's GPIO-timing
+    protocol has no address to scan for).
+    """
+    profiles = get_all_profiles()
 
-    # --- GPIO/manual scan: TODO once DHT11 config is decided --- and the other sensors are in ready
+    print("\nCould not auto-identify a connected sensor.")
+    print("Please confirm which sensor this is:")
+    print("---------------------------------------")
+    for i, profile in enumerate(profiles, start=1):
+        print(f"{i}. {profile.model}  ({profile.protocol})")
+    print("0. Skip / exit")
 
-    return found
+    while True:
+        choice = input("\nEnter number: ").strip()
 
-    # use logger and error handling to always know where your errors are coming from, and to avoid silent failures.,
+        if choice == "0":
+            return None
 
-    #you need to loop  end 
-    # logic of sensor reading. Am i still getting data? check for potrs interval?
-    # use QR codes for different analog sensors
+        if choice.isdigit() and 1 <= int(choice) <= len(profiles):
+            selected_profile = profiles[int(choice) - 1]
+
+            if selected_profile.is_analog:
+                sensor = Sensor.analog(
+                    name=selected_profile.model, gnd=None, vcc=None, pincount=1
+                )
+            else:
+                sensor = Sensor.digital(
+                    name=selected_profile.model, family=selected_profile.model,
+                    familycode="", protocol=selected_profile.protocol
+                )
+
+            sensor.apply_profile(selected_profile)
+            return sensor
+
+        print("Invalid selection, please try again.")
