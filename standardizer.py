@@ -11,9 +11,9 @@ def standardize(sensor_key, profile, field_name, value):
     covering base name, unit, value, and time.
     """
     unit_map = {
-        "temperature": "Cel",   # SenML standard unit code for Celsius
-        "humidity": "%RH",
-        "pressure": "Pa",
+        "temperature": " °C",   # SenML standard unit code for Celsius
+        "humidity": " %RH",
+        "pressure": " Pa",
     }
 
     return {
