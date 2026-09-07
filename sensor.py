@@ -26,6 +26,7 @@ class Sensor:
         # Filled in later, once identified
         self.profile = None
         self.device_address = kwargs.get("device_address")
+        self.gpio_ports = kwargs.get("gpio_ports", [])   # which port(s) this sensor occupies
 
     @classmethod
     def analog(cls, name, gnd, vcc, pincount, **kwargs):

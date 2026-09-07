@@ -1,27 +1,62 @@
 import time
 
-from sensor_detector import auto_detect_sensors, manual_fallback_selection
+from sensor_detector import (
+    auto_detect_sensors,
+    prompt_for_gpio_sensors,
+    manual_fallback_selection,
+)
+from gpio_scanner import scan_gpio_connections
 from data_publisher import DataPublisher
 
 WEBAPP_URL = "http://localhost:5000/api/sensor-data"
 
 
-def run_sensor_loop(sensor, publisher):
-    """
-    Reads a Sensor on a loop and publishes each reading.
-    Works for any sensor model, analog or digital, single or multi-measurement -
-    the differences are all handled inside Sensor/SensorProfile already.
-    """
-    print(f"\nRunning: {sensor.profile.model} ({'Analog' if sensor.is_analog else 'Digital'})")
+def build_sensor_list():
+    print("Scanning for connected sensors...")
+    sensors = auto_detect_sensors()
+
+    if sensors:
+        print(f"\n{len(sensors)} sensor(s) auto-detected:")
+        for s in sensors:
+            print(f" - {s}")
+    else:
+        print("\nNo sensors could be auto-identified via protocol scanning.")
+
+    print("\nChecking GPIO pins for additional connections...")
+    detected_pins = scan_gpio_connections()
+
+    if detected_pins:
+        print(f"Connections found on: {', '.join(f'GPIO{p}' for p in detected_pins)}")
+        sensors.extend(prompt_for_gpio_sensors(detected_pins))
+    else:
+        print("No additional GPIO connections detected.")
+
+    while True:
+        choice = input("\nAdd another sensor manually? (y/n): ").strip().lower()
+        if choice != "y":
+            break
+        sensor = manual_fallback_selection()
+        if sensor:
+            sensors.append(sensor)
+
+    return sensors
+
+
+def run_multi_sensor_loop(sensors, publisher):
+    print(f"\nRunning {len(sensors)} sensor(s):")
+    for s in sensors:
+        print(f" - {s}")
     print("Press Ctrl+C to stop.\n")
 
     try:
         while True:
-            readings = sensor.read_value()
+            for sensor in sensors:
+                readings = sensor.read_value()
 
-            if not readings:
-                print("Values not available (sensor not detected or read failed).")
-            else:
+                if not readings:
+                    print(f"  {sensor.profile.model}: values not available.")
+                    continue
+
                 for measurement_type, value in readings.items():
                     measurement = sensor.profile.get_measurement(measurement_type)
                     unit = measurement.unit if measurement else ""
@@ -36,6 +71,7 @@ def run_sensor_loop(sensor, publisher):
                     }
                     publisher.publish(reading_record)
 
+            print()
             time.sleep(2)
 
     except KeyboardInterrupt:
@@ -44,27 +80,13 @@ def run_sensor_loop(sensor, publisher):
 
 def main():
     publisher = DataPublisher(WEBAPP_URL)
+    sensors = build_sensor_list()
 
-    print("Scanning for connected sensors...")
-    detected_sensors = auto_detect_sensors()
-
-    if detected_sensors:
-        print(f"\n{len(detected_sensors)} sensor(s) auto-detected:")
-        for s in detected_sensors:
-            print(f" - {s}")
-    else:
-        print("\nNo sensors could be auto-identified.")
-        fallback_sensor = manual_fallback_selection()
-        if fallback_sensor:
-            detected_sensors = [fallback_sensor]
-
-    if not detected_sensors:
-        print("\nNo sensor to run. Exiting.")
+    if not sensors:
+        print("\nNo sensors to run. Exiting.")
         return
 
-    # For now: run the first sensor found/selected.
-    # (Running multiple simultaneously is a reasonable next step once this works.)
-    run_sensor_loop(detected_sensors[0], publisher)
+    run_multi_sensor_loop(sensors, publisher)
 
 
 if __name__ == "__main__":

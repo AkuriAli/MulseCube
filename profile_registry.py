@@ -1,11 +1,7 @@
 from sensor_profile import SensorProfile
 from sensor_measurement import SensorMeasurement
-from drivers import ds18b20_driver, dht11_driver
+from drivers import ds18b20_driver, dht_driver
 
-
-# Small wrapper functions so every profile's read_fn has the SAME shape:
-# takes a device_address (ignored if not needed) and returns a dict of
-# {measurement_type: value}, regardless of how many things the sensor measures.
 
 def _read_ds18b20(device_address):
     temp = ds18b20_driver.read_raw(device_address)
@@ -14,8 +10,14 @@ def _read_ds18b20(device_address):
     return {"temperature": temp}
 
 
-def _read_dht11(device_address=None):
-    temperature, humidity = dht11_driver.read_raw()
+def _read_dht(device_address):
+    """
+    Shared by DHT11 and DHT22 - device_address here is the already-resolved
+    sysfs device path (set once per Sensor instance when the user confirms
+    which port it's on), so this function doesn't need to know or care
+    which GPIO pin it came from.
+    """
+    temperature, humidity = dht_driver.read_raw(device_address)
     if temperature is None or humidity is None:
         return None
     return {"temperature": temperature, "humidity": humidity}
@@ -36,20 +38,31 @@ PROFILES = [
     SensorProfile(
         model="DHT11",
         protocol="GPIO-Timing",
-        is_analog=True,          # per your team's simplified bucketing: non-addressable = "Analog"
+        is_analog=True,
         identifier_type="manual_gpio",
-        identifier=17,
-        read_fn=_read_dht11,
+        identifier=None,          # assigned per-instance at detection time, not fixed
+        read_fn=_read_dht,
         measurements=[
             SensorMeasurement("temperature", "Cel", 0, 50),
             SensorMeasurement("humidity", "%RH", 20, 90),
+        ],
+    ),
+    SensorProfile(
+        model="DHT22",
+        protocol="GPIO-Timing",
+        is_analog=True,
+        identifier_type="manual_gpio",
+        identifier=None,          # assigned per-instance at detection time, not fixed
+        read_fn=_read_dht,
+        measurements=[
+            SensorMeasurement("temperature", "Cel", -40, 80),
+            SensorMeasurement("humidity", "%RH", 0, 100),
         ],
     ),
 ]
 
 
 def find_by_family_code(family_code):
-    """Used during 1-Wire auto-detection."""
     for profile in PROFILES:
         if profile.identifier_type == "family_code" and profile.identifier == family_code:
             return profile
@@ -57,7 +70,6 @@ def find_by_family_code(family_code):
 
 
 def find_by_i2c_address(address):
-    """Used during I2C auto-detection (not yet implemented)."""
     for profile in PROFILES:
         if profile.identifier_type == "i2c_address" and profile.identifier == address:
             return profile
@@ -65,10 +77,8 @@ def find_by_i2c_address(address):
 
 
 def get_manual_registration_profiles():
-    """Profiles that can NEVER be auto-detected (e.g. DHT-family) - offered as menu choices."""
     return [p for p in PROFILES if p.identifier_type == "manual_gpio"]
 
 
 def get_all_profiles():
-    """Used for the full manual fallback menu, when auto-detection finds nothing at all."""
     return PROFILES
