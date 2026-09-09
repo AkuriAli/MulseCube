@@ -4,9 +4,7 @@ class Sensor:
     only (analog vs digital, pins, protocol) - it does NOT know what model
     it is until a SensorProfile is attached via apply_profile().
 
-    Use Sensor.analog(...) or Sensor.digital(...) to create one - this is
-    Python's equivalent of the two constructors in the C# diagram, since
-    Python doesn't support having two real __init__ methods.
+    Use Sensor.analog(...) or Sensor.digital(...) to create one.
     """
 
     def __init__(self, name, is_analog, **kwargs):
