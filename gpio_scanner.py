@@ -1,3 +1,4 @@
+import time
 from gpiozero import InputDevice, Device
 
 # Pins already claimed by dedicated protocols - never scan these generically,
@@ -7,31 +8,52 @@ RESERVED_PINS = {2, 3, 4, 14, 15}   # I2C (2,3), 1-Wire (4), UART (14,15)
 # Common "free" GPIOs on a standard 40-pin header, excluding reserved ones.
 CANDIDATE_PINS = [5, 6, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
 
+SETTLE_DELAY = 0.05
+SAMPLES_PER_TEST = 3
+SAMPLE_DELAY = 0.01
+
+
+def _stable_read(pin):
+    """
+    Takes several readings under the internal pull-down. Returns the value
+    only if every sample agrees (filters out electrical noise); returns
+    None if readings were inconsistent.
+    """
+    device = InputDevice(pin, pull_up=False)
+    time.sleep(SETTLE_DELAY)   # let the line settle before trusting any reading
+
+    readings = []
+    for _ in range(SAMPLES_PER_TEST):
+        readings.append(device.value)
+        time.sleep(SAMPLE_DELAY)
+    device.close()
+
+    if all(r == readings[0] for r in readings):
+        return readings[0]
+    return None
+
 
 def scan_gpio_connections():
     """
-    Checks each candidate pin with its internal pull-down enabled.
-    A pin reading HIGH here is a strong signal something is wired to it.
-    A floating (unconnected) pin will read LOW.
-    Returns a list of GPIO pin numbers that appear connected.
-
-    IMPORTANT: fully releases gpiozero's pin factory (the underlying GPIO
-    chip handle) once done, not just each individual pin. Without this,
-    the kernel's dht11 overlay fails with EBUSY when it later tries to
-    claim the same pin, since gpiozero still holds a lock on it.
+    Checks each candidate pin with the internal pull-down enabled. A pin
+    reading HIGH is treated as connected. (The earlier dual pull-up/pull-down
+    test was dropped - the pull-up half proved unreliable on this Pi 5's GPIO
+    stack, while this single pull-down test matches confirmed real hardware.
+    Note: sensors that idle LOW instead of HIGH would still be missed by this
+    test - the manual "add sensor" fallback in main.py exists for that case.)
     """
     connected = []
 
     for pin in CANDIDATE_PINS:
         try:
-            device = InputDevice(pin, pull_up=False) ' Review Pull up/pull down resistor notes and correct detection code'
-            if device.value:
+            reading = _stable_read(pin)
+            if reading:
                 connected.append(pin)
-            device.close()
         except Exception:
             continue
 
     if Device.pin_factory is not None:
         Device.pin_factory.close()
+        Device.pin_factory = None
 
     return connected

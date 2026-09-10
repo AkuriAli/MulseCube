@@ -7,7 +7,7 @@ class SensorProfile:
     """
 
     def __init__(self, model, protocol, is_analog, identifier_type, identifier,
-                 read_fn, measurements):
+                 read_fn, measurements, resolve_address_fn=None):
         self.model = model
         self.protocol = protocol
         self.is_analog = is_analog          # which Sensor constructor this model uses
@@ -15,6 +15,11 @@ class SensorProfile:
         self.identifier = identifier            # e.g. "28", "0x76", or a GPIO pin number
         self.read_fn = read_fn              # function that returns {measurement_type: raw_value}
         self.measurements = measurements    # list[SensorMeasurement]
+        # How to turn a raw GPIO pin number into whatever this model's read_fn
+        # actually needs. Defaults to "just use the pin number as-is" (fine for
+        # simple digital sensors like MQ-8). DHT11/DHT22 override this to load
+        # their kernel overlay and return a resolved device path instead.
+        self.resolve_address_fn = resolve_address_fn or (lambda pin: pin)
 
     def get_measurement(self, measurement_type):
         """Finds this profile's SensorMeasurement for a given type (e.g. 'temperature')."""

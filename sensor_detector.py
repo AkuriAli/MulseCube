@@ -1,6 +1,6 @@
 from sensor import Sensor
 from profile_registry import find_by_family_code, get_manual_registration_profiles, get_all_profiles
-from drivers import ds18b20_driver, dht_driver
+from drivers import ds18b20_driver
 from gpio_scanner import scan_gpio_connections
 
 
@@ -39,7 +39,7 @@ def _build_sensor_for_pin(profile, pin):
         sensor = Sensor.digital(name=profile.model, family=profile.model,
                                 familycode="", protocol=profile.protocol)
 
-    device_path = dht_driver.get_or_load_device(pin)
+    device_path = profile.resolve_address_fn(pin)
     sensor.device_address = device_path
     sensor.gpio_ports = [pin]
     sensor.apply_profile(profile)

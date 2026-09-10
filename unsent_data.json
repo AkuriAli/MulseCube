@@ -103,5 +103,376 @@
     "unit": "%RH",
     "value": 51.0,
     "timestamp": 1788251274.5300333
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.7,
+    "timestamp": 1788952232.4459045
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 62.6,
+    "timestamp": 1788952232.4577246
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.8,
+    "timestamp": 1788952232.4820848
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 57.0,
+    "timestamp": 1788952232.484197
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.0,
+    "timestamp": 1788952234.5139146
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 63.0,
+    "timestamp": 1788952234.5162709
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.8,
+    "timestamp": 1788952234.5471263
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 57.0,
+    "timestamp": 1788952234.5494015
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.0,
+    "timestamp": 1788952236.5802166
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 63.0,
+    "timestamp": 1788952236.5834796
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.9,
+    "timestamp": 1788952236.6140628
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 56.0,
+    "timestamp": 1788952236.616311
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.1,
+    "timestamp": 1788957726.4775867
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 61.3,
+    "timestamp": 1788957726.489751
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.6,
+    "timestamp": 1788957726.5160208
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 54.0,
+    "timestamp": 1788957726.5181055
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.1,
+    "timestamp": 1788957728.548822
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 61.6,
+    "timestamp": 1788957728.5513277
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.6,
+    "timestamp": 1788957728.5817566
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 54.0,
+    "timestamp": 1788957728.5839994
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.1,
+    "timestamp": 1788957730.6136127
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 61.6,
+    "timestamp": 1788957730.61706
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.4,
+    "timestamp": 1788957730.64825
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 55.0,
+    "timestamp": 1788957730.6507401
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.1,
+    "timestamp": 1788957732.681576
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 61.6,
+    "timestamp": 1788957732.6927726
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 24.3,
+    "timestamp": 1788957732.7186882
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 55.0,
+    "timestamp": 1788957732.7220826
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.5,
+    "timestamp": 1788984182.5605338
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 62.0,
+    "timestamp": 1788984182.5715199
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.5,
+    "timestamp": 1788984184.5976794
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 62.0,
+    "timestamp": 1788984184.6011517
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.6,
+    "timestamp": 1788984186.6337004
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 62.0,
+    "timestamp": 1788984186.63718
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.5,
+    "timestamp": 1788984802.4860573
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 68.3,
+    "timestamp": 1788984802.48922
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.0,
+    "timestamp": 1788984804.5200038
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 67.5,
+    "timestamp": 1788984804.5227637
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.9,
+    "timestamp": 1789028013.6170347
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 61.2,
+    "timestamp": 1789028013.630563
+  },
+  {
+    "model": "MQ-8",
+    "type": "hydrogen_gas_detected",
+    "unit": "bool",
+    "value": 1,
+    "timestamp": 1789028013.6342187
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.5,
+    "timestamp": 1789028013.6609054
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 56.0,
+    "timestamp": 1789028013.663455
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.7,
+    "timestamp": 1789028015.6953914
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 56.3,
+    "timestamp": 1789028015.6980948
+  },
+  {
+    "model": "MQ-8",
+    "type": "hydrogen_gas_detected",
+    "unit": "bool",
+    "value": 1,
+    "timestamp": 1789028015.705825
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.5,
+    "timestamp": 1789028015.7333508
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 56.0,
+    "timestamp": 1789028015.7369542
+  },
+  {
+    "model": "DHT11",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.7,
+    "timestamp": 1789028017.7687821
+  },
+  {
+    "model": "DHT11",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 56.3,
+    "timestamp": 1789028017.7715569
+  },
+  {
+    "model": "MQ-8",
+    "type": "hydrogen_gas_detected",
+    "unit": "bool",
+    "value": 1,
+    "timestamp": 1789028017.7789207
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.6,
+    "timestamp": 1789028017.80541
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 54.0,
+    "timestamp": 1789028017.8082778
   }
 ]

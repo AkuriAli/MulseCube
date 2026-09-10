@@ -1,65 +1,23 @@
-from sensor_profile import SensorProfile
-from sensor_measurement import SensorMeasurement
-from drivers import ds18b20_driver, dht_driver
+import importlib
+import pkgutil
+import profiles
 
 
-def _read_ds18b20(device_address):
-    temp = ds18b20_driver.read_raw(device_address)
-    if temp is None:
-        return None
-    return {"temperature": temp}
-
-
-def _read_dht(device_address):
+def _discover_profiles():
     """
-    Shared by DHT11 and DHT22 - device_address here is the already-resolved
-    sysfs device path (set once per Sensor instance when the user confirms
-    which port it's on), so this function doesn't need to know or care
-    which GPIO pin it came from.
+    Automatically imports every module inside the profiles/ package and
+    collects each one's PROFILE object. Adding a new sensor means adding
+    one new file to profiles/ - this function requires zero changes.
     """
-    temperature, humidity = dht_driver.read_raw(device_address)
-    if temperature is None or humidity is None:
-        return None
-    return {"temperature": temperature, "humidity": humidity}
+    discovered = []
+    for _, module_name, _ in pkgutil.iter_modules(profiles.__path__):
+        module = importlib.import_module(f"profiles.{module_name}")
+        if hasattr(module, "PROFILE"):
+            discovered.append(module.PROFILE)
+    return discovered
 
 
-PROFILES = [
-    SensorProfile(
-        model="DS18B20",
-        protocol="1-Wire",
-        is_analog=False,
-        identifier_type="family_code",
-        identifier="28",
-        read_fn=_read_ds18b20,
-        measurements=[
-            SensorMeasurement("temperature", "Cel", -55, 125),
-        ],
-    ),
-    SensorProfile(
-        model="DHT11",
-        protocol="GPIO-Timing",
-        is_analog=True,
-        identifier_type="manual_gpio",
-        identifier=None,          # assigned per-instance at detection time, not fixed
-        read_fn=_read_dht,
-        measurements=[
-            SensorMeasurement("temperature", "Cel", 0, 50),
-            SensorMeasurement("humidity", "%RH", 20, 90),
-        ],
-    ),
-    SensorProfile(
-        model="DHT22",
-        protocol="GPIO-Timing",
-        is_analog=True,
-        identifier_type="manual_gpio",
-        identifier=None,          # assigned per-instance at detection time, not fixed
-        read_fn=_read_dht,
-        measurements=[
-            SensorMeasurement("temperature", "Cel", -40, 80),
-            SensorMeasurement("humidity", "%RH", 0, 100),
-        ],
-    ),
-]
+PROFILES = _discover_profiles()
 
 
 def find_by_family_code(family_code):
