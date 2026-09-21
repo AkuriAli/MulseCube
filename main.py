@@ -1,93 +1,77 @@
 import time
 
-from sensor_profiles import SENSORS
-from drivers import ds18b20_driver, dht11_driver
-from standardizer import standardize
+from sensor_detector import (
+    auto_detect_sensors,
+    prompt_for_gpio_sensors,
+    manual_fallback_selection,
+)
+from gpio_scanner import scan_gpio_connections
+from data_publisher import DataPublisher
+
+WEBAPP_URL = "http://localhost:5000/api/sensor-data"
 
 
-def display_menu():
-    """Prints the list of known sensor profiles for the user to choose from."""
-    print("\nSensor detected on port. Please confirm which sensor this is:")
-    print("-------------------------------------------------------------")
-    for i, (key, profile) in enumerate(SENSORS.items(), start=1):
-        print(f"{i}. {profile['name']}  ({profile['protocol']})")
-    print("0. Exit")
+def build_sensor_list():
+    print("Scanning for connected sensors...")
+    sensors = auto_detect_sensors()
 
+    if sensors:
+        print(f"\n{len(sensors)} sensor(s) auto-detected:")
+        for s in sensors:
+            print(f" - {s}")
+    else:
+        print("\nNo sensors could be auto-identified via protocol scanning.")
 
-def get_user_selection():
-    """Loops until the user enters a valid menu choice. Returns the sensor key, or None to exit."""
-    keys = list(SENSORS.keys())
+    print("\nChecking GPIO pins for additional connections...")
+    detected_pins = scan_gpio_connections()
+
+    if detected_pins:
+        print(f"Connections found on: {', '.join(f'GPIO{p}' for p in detected_pins)}")
+        sensors.extend(prompt_for_gpio_sensors(detected_pins))
+    else:
+        print("No additional GPIO connections detected.")
 
     while True:
-        display_menu()
-        choice = input("\nEnter number: ").strip()
+        choice = input("\nAdd another sensor manually? (y/n): ").strip().lower()
+        if choice != "y":
+            break
+        sensor = manual_fallback_selection()
+        if sensor:
+            sensors.append(sensor)
 
-        if choice == "0":
-            return None
-
-        if choice.isdigit() and 1 <= int(choice) <= len(keys):
-            return keys[int(choice) - 1]
-
-        print("Invalid selection, please try again.")
+    return sensors
 
 
-def run_ds18b20_loop():
-    """
-    Reads DS18B20 values on a loop and prints standardized readings.
-    Uses the real 1-Wire bus if available (e.g. on the Pi with a sensor wired up),
-    otherwise falls back to mock values automatically (see ds18b20_driver.py).
-    """
-    device_list = ds18b20_driver.scan_for_ds18b20()
-
-    if not device_list:
-        print("\nNo DS18B20 device found on the 1-Wire bus. Check wiring and try again.")
-        return
-
-    device_address = device_list[0]
-    profile = SENSORS["ds18b20"]
-
-    print(f"\nReading from: {device_address}")
+def run_multi_sensor_loop(sensors, publisher):
+    print(f"\nRunning {len(sensors)} sensor(s):")
+    for s in sensors:
+        print(f" - {s}")
     print("Press Ctrl+C to stop.\n")
 
     try:
         while True:
-            raw_temp = ds18b20_driver.read_raw(device_address)
+            for sensor in sensors:
+                readings = sensor.read_value()
 
-            if raw_temp is None:
-                print("Read failed (bad checksum or disconnected).")
-            else:
-                record = standardize("ds18b20", profile, "temperature", raw_temp)
-                print(f"Reading: {record}")
+                if not readings:
+                    print(f"  {sensor.profile.model}: values not available.")
+                    continue
 
-            time.sleep(2)
+                for measurement_type, value in readings.items():
+                    measurement = sensor.profile.get_measurement(measurement_type)
+                    unit = measurement.unit if measurement else ""
+                    print(f"  {sensor.profile.model} {measurement_type}: {value}{unit}")
 
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
+                    reading_record = {
+                        "model": sensor.profile.model,
+                        "type": measurement_type,
+                        "unit": unit,
+                        "value": value,
+                        "timestamp": time.time(),
+                    }
+                    publisher.publish(reading_record)
 
-
-def run_dht11_loop():
-    """
-    Reads DHT11 values on a loop and prints standardized readings for
-    both temperature and humidity. Uses the real kernel IIO device if the
-    dtoverlay is enabled and a sensor is wired up.
-    """
-    profile = SENSORS["dht11"]
-
-    print(f"\nExpected wiring: DHT11 data pin -> GPIO{profile['identifier']}")
-    print("Press Ctrl+C to stop.\n")
-
-    try:
-        while True:
-            temperature, humidity = dht11_driver.read_raw()
-
-            if temperature is None or humidity is None:
-                print("Values not available (sensor not detected or read failed).")
-            else:
-                temp_record = standardize("dht11", profile, "temperature", temperature)
-                humidity_record = standardize("dht11", profile, "humidity", humidity)
-                print(f"Reading: {temp_record}")
-                print(f"Reading: {humidity_record}")
-
+            print()
             time.sleep(2)
 
     except KeyboardInterrupt:
@@ -95,21 +79,14 @@ def run_dht11_loop():
 
 
 def main():
-    sensor_key = get_user_selection()
+    publisher = DataPublisher(WEBAPP_URL)
+    sensors = build_sensor_list()
 
-    if sensor_key is None:
-        print("Exiting.")
+    if not sensors:
+        print("\nNo sensors to run. Exiting.")
         return
 
-    profile = SENSORS[sensor_key]
-    print(f"\nSelected: {profile['name']} ({profile['protocol']})")
-
-    if sensor_key == "ds18b20":
-        run_ds18b20_loop()
-    elif sensor_key == "dht11":
-        run_dht11_loop()
-    else:
-        print(f"\nNo driver implemented yet for {profile['name']}. Coming soon.")
+    run_multi_sensor_loop(sensors, publisher)
 
 
 if __name__ == "__main__":
