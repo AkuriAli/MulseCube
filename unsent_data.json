@@ -1048,5 +1048,26 @@
     "unit": "bool",
     "value": 1,
     "timestamp": 1789983627.0947788
+  },
+  {
+    "model": "DHT22",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 22.8,
+    "timestamp": 1789994024.5686831
+  },
+  {
+    "model": "DHT22",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 51.9,
+    "timestamp": 1789994024.584514
+  },
+  {
+    "model": "MQ-8",
+    "type": "hydrogen_gas_detected",
+    "unit": "bool",
+    "value": 1,
+    "timestamp": 1789994024.5899343
   }
 ]
