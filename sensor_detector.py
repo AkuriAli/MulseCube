@@ -1,122 +1,91 @@
+"""
+Small building blocks used by the sensor monitor: turning "something was found"
+into a Sensor object, and the dashboard questions for manually-added sensors.
+"""
 from sensor import Sensor
-from profile_registry import find_by_family_code, get_manual_registration_profiles, get_all_profiles
-from drivers import ds18b20_driver
-from gpio_scanner import scan_gpio_connections
+from profile_registry import get_manual_registration_profiles
+import remote_selector
+
+SKIP_OPTION = "Skip this port"
+CANCEL_OPTION = "Cancel"
 
 
-def auto_detect_sensors():
+def model_label(profile):
+    return f"{profile.model} ({profile.protocol})"
+
+
+def build_1wire_sensor(profile, device_address):
+    sensor = Sensor.digital(
+        name=profile.model,
+        family=profile.model,
+        familycode=device_address.split("-")[0],
+        protocol=profile.protocol,
+        device_address=device_address,
+    )
+    sensor.apply_profile(profile)
+    return sensor
+
+
+def build_i2c_sensor(profile, address):
+    sensor = Sensor.digital(
+        name=profile.model,
+        family=profile.model,
+        familycode=hex(address),
+        protocol=profile.protocol,
+        device_address=address,
+    )
+    sensor.apply_profile(profile)
+    return sensor
+
+
+def build_gpio_sensor(profile, pin):
     """
-    Scans every protocol capable of self-identification and builds a Sensor
-    object (with its profile already attached) for each match found.
+    Sets up a sensor on a GPIO pin. Returns None if the pin couldn't be set up
+    (for a DHT that means the kernel overlay failed to load).
     """
-    identified = []
+    address = profile.resolve_address_fn(pin)
+    if address is None:
+        return None
 
-    for device_address in ds18b20_driver.scan_for_ds18b20():
-        family_code = device_address.split("-")[0]
-        profile = find_by_family_code(family_code)
-
-        if profile:
-            sensor = Sensor.digital(
-                name=profile.model,
-                family=profile.model,
-                familycode=family_code,
-                protocol=profile.protocol,
-                device_address=device_address,
-            )
-            sensor.apply_profile(profile)
-            identified.append(sensor)
-
-    # --- I2C scan: TODO once BME280 is wired up ---
-
-    return identified
-
-
-def _build_sensor_for_pin(profile, pin):
-    """Builds a Sensor for a manually-confirmed profile on a specific GPIO pin."""
     if profile.is_analog:
         sensor = Sensor.analog(name=profile.model, gnd=None, vcc=None, pincount=1)
     else:
         sensor = Sensor.digital(name=profile.model, family=profile.model,
                                 familycode="", protocol=profile.protocol)
 
-    device_path = profile.resolve_address_fn(pin)
-    sensor.device_address = device_path
+    sensor.device_address = address
     sensor.gpio_ports = [pin]
     sensor.apply_profile(profile)
     return sensor
 
 
-def prompt_for_gpio_sensors(detected_pins):
+def choose_manual_sensor(free_pins):
     """
-    Walks through each GPIO pin that showed a physical connection, asking
-    which sensor is wired there. Offers "same as previous port" for a
-    single sensor that spans more than one GPIO pin.
+    Asks, on the dashboard, which model to add and which GPIO pin it is on.
+    Blocks until answered, so call it from a worker thread. Returns
+    (profile, pin), or None if cancelled.
     """
     profiles = get_manual_registration_profiles()
-    sensors = []
-    last_sensor = None
+    options = [model_label(p) for p in profiles] + [CANCEL_OPTION]
 
-    for pin in detected_pins:
-        print(f"\nConnection detected on GPIO{pin}. Which sensor is this?")
-        for i, profile in enumerate(profiles, start=1):
-            print(f"{i}. {profile.model}  ({profile.protocol})")
+    choice = remote_selector.request_selection(
+        request_id="manual-model",
+        prompt="Add a sensor manually - which model?",
+        options=options,
+    )
+    if choice is None or choice == CANCEL_OPTION:
+        return None
 
-        same_as_previous_option = None
-        if last_sensor:
-            same_as_previous_option = len(profiles) + 1
-            print(f"{same_as_previous_option}. Same as previous port ({last_sensor.profile.model})")
+    profile = next((p for p in profiles if model_label(p) == choice), None)
+    if profile is None:
+        return None
 
-        print("0. Skip this port")
+    pin_choice = remote_selector.request_selection(
+        request_id="manual-pin",
+        prompt=f"Which GPIO pin is the {profile.model}'s data/DO pin connected to?",
+        options=[str(p) for p in free_pins] + [CANCEL_OPTION],
+    )
+    if pin_choice is None or pin_choice == CANCEL_OPTION:
+        return None
 
-        while True:
-            choice = input("\nEnter number: ").strip()
-
-            if choice == "0":
-                break
-
-            if choice.isdigit() and 1 <= int(choice) <= len(profiles):
-                profile = profiles[int(choice) - 1]
-                sensor = _build_sensor_for_pin(profile, pin)
-                sensors.append(sensor)
-                last_sensor = sensor
-                break
-
-            if same_as_previous_option and choice == str(same_as_previous_option):
-                # This pin belongs to the sensor just registered, not a new one
-                last_sensor.gpio_ports.append(pin)
-                break
-
-            print("Invalid selection, please try again.")
-
-    return sensors
-
-
-def manual_fallback_selection():
-    """
-    Last-resort manual add, for anything the GPIO presence scan might miss
-    (e.g. a sensor that idles LOW instead of HIGH).
-    """
-    profiles = get_all_profiles()
-
-    print("\nAdd a sensor manually:")
-    for i, profile in enumerate(profiles, start=1):
-        print(f"{i}. {profile.model}  ({profile.protocol})")
-    print("0. Cancel")
-
-    while True:
-        choice = input("\nEnter number: ").strip()
-
-        if choice == "0":
-            return None
-
-        if choice.isdigit() and 1 <= int(choice) <= len(profiles):
-            profile = profiles[int(choice) - 1]
-            if profile.is_analog:
-                sensor = Sensor.analog(name=profile.model, gnd=None, vcc=None, pincount=1)
-            else:
-                sensor = Sensor.digital(name=profile.model, family=profile.model,
-                                        familycode="", protocol=profile.protocol)
-            sensor.apply_profile(profile)
-            return sensor
-
-        print("Invalid selection, please try again.")
+    return profile, int(pin_choice)

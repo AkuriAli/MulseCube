@@ -26,6 +26,7 @@ PROFILE = SensorProfile(
     identifier_type="manual_gpio",
     identifier=None,
     read_fn=_read,
+    release_fn=digital_output_driver.release,
     measurements=[
         SensorMeasurement("hydrogen_ppm", "ppm", 100, 10000),
         SensorMeasurement("gas_alarm_triggered", "bool", 0, 1),

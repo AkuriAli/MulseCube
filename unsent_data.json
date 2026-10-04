@@ -1069,5 +1069,41 @@
     "unit": "bool",
     "value": 1,
     "timestamp": 1789994024.5899343
+  },
+  {
+    "model": "DHT20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.4,
+    "timestamp": 1790233820.9238534,
+    "min": -40,
+    "max": 80
+  },
+  {
+    "model": "DHT20",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 49.4,
+    "timestamp": 1790233820.932784,
+    "min": 0,
+    "max": 100
+  },
+  {
+    "model": "DHT20",
+    "type": "temperature",
+    "unit": "Cel",
+    "value": 23.4,
+    "timestamp": 1790233823.030532,
+    "min": -40,
+    "max": 80
+  },
+  {
+    "model": "DHT20",
+    "type": "humidity",
+    "unit": "%RH",
+    "value": 49.6,
+    "timestamp": 1790233823.0333252,
+    "min": 0,
+    "max": 100
   }
 ]

@@ -18,6 +18,7 @@ PROFILE = SensorProfile(
     identifier=None,
     read_fn=_read,
     resolve_address_fn=dht_driver.get_or_load_device,
+    release_fn=dht_driver.release_device,
     measurements=[
         SensorMeasurement("temperature", "Cel", -40, 80),
         SensorMeasurement("humidity", "%RH", 0, 100),

@@ -1,92 +1,35 @@
-import time
+import signal
+import sys
 
-from sensor_detector import (
-    auto_detect_sensors,
-    prompt_for_gpio_sensors,
-    manual_fallback_selection,
-)
-from gpio_scanner import scan_gpio_connections
 from data_publisher import DataPublisher
+from remote_selector import wait_for_hmi
+from sensor_monitor import SensorMonitor
+from drivers import dht_driver
 
 WEBAPP_URL = "http://localhost:5000/api/sensor-data"
 
 
-def build_sensor_list():
-    print("Scanning for connected sensors...")
-    sensors = auto_detect_sensors()
+def main():
+    wait_for_hmi()
 
-    if sensors:
-        print(f"\n{len(sensors)} sensor(s) auto-detected:")
-        for s in sensors:
-            print(f" - {s}")
-    else:
-        print("\nNo sensors could be auto-identified via protocol scanning.")
+    # Start from a clean slate: remove any DHT overlays left over from a
+    # previous run, which would otherwise keep the kernel holding those pins.
+    dht_driver.cleanup_stale_overlays()
 
-    print("\nChecking GPIO pins for additional connections...")
-    detected_pins = scan_gpio_connections()
+    publisher = DataPublisher(WEBAPP_URL)
+    monitor = SensorMonitor(publisher)
 
-    if detected_pins:
-        print(f"Connections found on: {', '.join(f'GPIO{p}' for p in detected_pins)}")
-        sensors.extend(prompt_for_gpio_sensors(detected_pins))
-    else:
-        print("No additional GPIO connections detected.")
-
-    while True:
-        choice = input("\nAdd another sensor manually? (y/n): ").strip().lower()
-        if choice != "y":
-            break
-        sensor = manual_fallback_selection()
-        if sensor:
-            sensors.append(sensor)
-
-    return sensors
-
-
-def run_multi_sensor_loop(sensors, publisher):
-    print(f"\nRunning {len(sensors)} sensor(s):")
-    for s in sensors:
-        print(f" - {s}")
-    print("Press Ctrl+C to stop.\n")
+    # systemd stops a service with SIGTERM, which would normally kill Python
+    # instantly. Turn it into a normal exit so the cleanup below always runs.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     try:
-        while True:
-            for sensor in sensors:
-                readings = sensor.read_value()
-
-                if not readings:
-                    print(f"  {sensor.profile.model}: values not available.")
-                    continue
-
-                for measurement_type, value in readings.items():
-                    measurement = sensor.profile.get_measurement(measurement_type)
-                    unit = measurement.unit if measurement else ""
-                    print(f"  {sensor.profile.model} {measurement_type}: {value}{unit}")
-
-                    reading_record = {
-                        "model": sensor.profile.model,
-                        "type": measurement_type,
-                        "unit": unit,
-                        "value": value,
-                        "timestamp": time.time(),
-                    }
-                    publisher.publish(reading_record)
-
-            print()
-            time.sleep(2)
-
+        monitor.run_forever()
     except KeyboardInterrupt:
         print("\nStopped by user.")
-
-
-def main():
-    publisher = DataPublisher(WEBAPP_URL)
-    sensors = build_sensor_list()
-
-    if not sensors:
-        print("\nNo sensors to run. Exiting.")
-        return
-
-    run_multi_sensor_loop(sensors, publisher)
+    finally:
+        monitor.shutdown()
+        dht_driver.cleanup_stale_overlays()
 
 
 if __name__ == "__main__":

@@ -16,3 +16,18 @@ def read_raw(gpio_pin):
     except Exception as e:
         print(f"  MQ-8 read error on GPIO{gpio_pin}: {e}")
         return None
+
+
+def release(gpio_pin):
+    """Closes and forgets the handle on this pin (called when the sensor is unplugged)."""
+    device = _pin_devices.pop(gpio_pin, None)
+    if device is not None:
+        try:
+            device.close()
+        except Exception:
+            pass
+
+
+def has_open_pins():
+    """True while any pin is being held open for continuous reading."""
+    return bool(_pin_devices)

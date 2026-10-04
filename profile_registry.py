@@ -8,10 +8,17 @@ def _discover_profiles():
     Automatically imports every module inside the profiles/ package and
     collects each one's PROFILE object. Adding a new sensor means adding
     one new file to profiles/ - this function requires zero changes.
+    A profile that fails to import is skipped with a warning, not fatal.
     """
     discovered = []
     for _, module_name, _ in pkgutil.iter_modules(profiles.__path__):
-        module = importlib.import_module(f"profiles.{module_name}")
+        try:
+            module = importlib.import_module(f"profiles.{module_name}")
+        except Exception as e:
+            # One broken sensor file (a missing library, a misplaced driver)
+            # must not stop every other sensor from working.
+            print(f"WARNING: skipping profile '{module_name}': {type(e).__name__}: {e}")
+            continue
         if hasattr(module, "PROFILE"):
             discovered.append(module.PROFILE)
     return discovered
@@ -40,3 +47,8 @@ def get_manual_registration_profiles():
 
 def get_all_profiles():
     return PROFILES
+
+
+def get_i2c_profiles():
+    """{i2c_address: profile} for every sensor model that identifies itself over I2C."""
+    return {p.identifier: p for p in PROFILES if p.identifier_type == "i2c_address"}

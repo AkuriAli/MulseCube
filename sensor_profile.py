@@ -7,7 +7,7 @@ class SensorProfile:
     """
 
     def __init__(self, model, protocol, is_analog, identifier_type, identifier,
-                 read_fn, measurements, resolve_address_fn=None):
+                 read_fn, measurements, resolve_address_fn=None, release_fn=None):
         self.model = model
         self.protocol = protocol
         self.is_analog = is_analog          # which Sensor constructor this model uses
@@ -20,6 +20,10 @@ class SensorProfile:
         # simple digital sensors like MQ-8). DHT11/DHT22 override this to load
         # their kernel overlay and return a resolved device path instead.
         self.resolve_address_fn = resolve_address_fn or (lambda pin: pin)
+        # How to let go of a pin when this sensor is unplugged (e.g. remove the
+        # kernel overlay, close the GPIO handle) so the pin is free for the next
+        # sensor. Defaults to doing nothing.
+        self.release_fn = release_fn or (lambda pin: None)
 
     def get_measurement(self, measurement_type):
         """Finds this profile's SensorMeasurement for a given type (e.g. 'temperature')."""

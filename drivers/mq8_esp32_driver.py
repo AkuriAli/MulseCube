@@ -8,9 +8,9 @@ RL = 10000             # load resistor on the MQ-8 module - check your specific 
 
 # --- Calibration values: MUST be determined for YOUR specific sensor unit ---
 # See calibrate_ro() below. Do not substitute a value copied from the internet.
-RO_CLEAN_AIR = None
-CURVE_M = None
-CURVE_B = None
+RO_CLEAN_AIR = 88827.20923276809
+CURVE_M = -0.169
+CURVE_B = 0.2818
 
 
 def _calculate_rs(voltage):
@@ -19,10 +19,12 @@ def _calculate_rs(voltage):
     return (SUPPLY_VOLTAGE - voltage) / voltage * RL
 
 
-def calibrate_ro(known_clean_air_ratio, samples=50):
+def calibrate_ro(samples=50):
     """
-    Run this ONCE, sensor warmed up, sitting in known clean air, to find
-    RO_CLEAN_AIR for your specific unit.
+    Run this ONCE, sensor warmed up and stable, sitting in genuinely clean
+    air (no gas sources nearby). Returns the value to hardcode into
+    RO_CLEAN_AIR above - by convention, Ro IS simply the sensor's own
+    resistance while in clean air, no separate reference ratio needed.
     """
     readings = []
     for _ in range(samples):
@@ -35,8 +37,7 @@ def calibrate_ro(known_clean_air_ratio, samples=50):
     if not readings:
         return None
 
-    average_rs = sum(readings) / len(readings)
-    return average_rs / known_clean_air_ratio
+    return sum(readings) / len(readings)
 
 
 def read_ppm():
