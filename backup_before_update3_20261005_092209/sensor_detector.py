@@ -8,7 +8,6 @@ import remote_selector
 
 SKIP_OPTION = "Skip this port"
 CANCEL_OPTION = "Cancel"
-NO_PIN_OPTION = "No DO wire - use the analog reading only"
 
 
 def model_label(profile):
@@ -44,14 +43,9 @@ def build_gpio_sensor(profile, pin):
     Sets up a sensor on a GPIO pin. Returns None if the pin couldn't be set up
     (for a DHT that means the kernel overlay failed to load).
     """
-    if pin is None:
-        if not profile.works_without_pin:
-            return None
-        address = None
-    else:
-        address = profile.resolve_address_fn(pin)
-        if address is None:
-            return None
+    address = profile.resolve_address_fn(pin)
+    if address is None:
+        return None
 
     if profile.is_analog:
         sensor = Sensor.analog(name=profile.model, gnd=None, vcc=None, pincount=1)
@@ -60,7 +54,7 @@ def build_gpio_sensor(profile, pin):
                                 familycode="", protocol=profile.protocol)
 
     sensor.device_address = address
-    sensor.gpio_ports = [pin] if pin is not None else []
+    sensor.gpio_ports = [pin]
     sensor.apply_profile(profile)
     return sensor
 
@@ -86,18 +80,12 @@ def choose_manual_sensor(free_pins):
     if profile is None:
         return None
 
-    pin_options = [str(p) for p in free_pins] + [CANCEL_OPTION]
-    if profile.works_without_pin:
-        pin_options = [NO_PIN_OPTION] + pin_options
-
     pin_choice = remote_selector.request_selection(
         request_id="manual-pin",
         prompt=f"Which GPIO pin is the {profile.model}'s data/DO pin connected to?",
-        options=pin_options,
+        options=[str(p) for p in free_pins] + [CANCEL_OPTION],
     )
     if pin_choice is None or pin_choice == CANCEL_OPTION:
         return None
-    if pin_choice == NO_PIN_OPTION:
-        return profile, None
 
     return profile, int(pin_choice)

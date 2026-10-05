@@ -42,7 +42,6 @@ class SensorMonitor:
     UNPLUG_SCANS = 2                # LOW scans in a row = a waiting/skipped pin was unplugged
     SELF_ID_MISSES = 2              # missed checks in a row = an I2C/1-Wire sensor is gone
     READ_FAILURES_BEFORE_REMOVE = 5 # failed reads in a row = a GPIO sensor is gone
-    READ_TIMEOUT = 5                # seconds a single sensor read may take before we move on
 
     def __init__(self, publisher):
         self.publisher = publisher
@@ -52,9 +51,6 @@ class SensorMonitor:
                                     # a good read must never hide a sensor that stopped answering scans)
         self.pending = {}           # pin -> {"cancel": Event}   (a question is open for this pin)
         self.skipped = set()        # pins the user chose "Skip" for while plugged in
-        self.ever_read = set()      # sensor keys that have produced at least one good reading
-        self.notices = {}           # pin -> cancel Event for an open "check the wiring" message
-        self._readers = {}          # key -> helper thread currently reading that sensor
         self.low_counts = {}        # pin -> consecutive LOW scans (only tracked for pending/skipped pins)
         self.answers = queue.Queue()        # (pin, token, choice) from prompt threads
         self.manual_results = queue.Queue() # (profile, pin) from the manual-add thread
@@ -67,8 +63,6 @@ class SensorMonitor:
         sensor = self.sensors.get(key)
         model = sensor.profile.model if sensor and sensor.profile else "sensor"
         kind, where = key
-        if kind == "manual":
-            return f"{model} (analog reading only)"
         if kind == "gpio":
             return f"{model} on GPIO{where}"
         if kind == "i2c":
@@ -86,7 +80,6 @@ class SensorMonitor:
         self.sensors[key] = sensor
         self.misses.pop(key, None)
         self.read_failures.pop(key, None)
-        self.ever_read.discard(key)
         print(f"+ Sensor connected: {self._describe(key)}")
 
     def _remove(self, key, reason, notify=True):
@@ -94,12 +87,8 @@ class SensorMonitor:
         sensor = self.sensors.pop(key, None)
         self.misses.pop(key, None)
         self.read_failures.pop(key, None)
-        self.ever_read.discard(key)
-        self._readers.pop(key, None)
         if sensor is None:
             return
-
-        never_responded = (reason == "never responded")
 
         for pin in sensor.gpio_ports:
             try:
@@ -113,15 +102,7 @@ class SensorMonitor:
             self.low_counts.pop(pin, None)
 
         print(f"- Sensor disconnected: {description} ({reason})")
-
-        if never_responded:
-            # It was never working, so there are no panels to clear - and asking
-            # "which sensor is it?" again would just repeat the same failure.
-            # Keep the pin skipped until it is physically unplugged.
-            for pin in sensor.gpio_ports:
-                self.skipped.add(pin)
-                self._open_notice(pin, sensor.profile.model)
-        elif notify:
+        if notify:
             remote_selector.notify_sensor_removed(sensor.profile.model)
 
     # -------------------------------------------- I2C and 1-Wire (automatic) --
@@ -175,9 +156,6 @@ class SensorMonitor:
         if entry is not None:
             entry["cancel"].set()
             print(f"  GPIO{pin} was unplugged before it was identified.")
-        notice = self.notices.pop(pin, None)
-        if notice is not None:
-            notice.set()
         self.skipped.discard(pin)
         self.low_counts.pop(pin, None)
 
@@ -200,24 +178,6 @@ class SensorMonitor:
             self.answers.put((pin, cancel, choice))
 
         threading.Thread(target=ask, daemon=True).start()
-
-    def _open_notice(self, pin, model):
-        """Shows a message on the dashboard (a popup with one OK button)."""
-        cancel = threading.Event()
-        self.notices[pin] = cancel
-        text = (f"The {model} on GPIO{pin} never gave a reading. Check the wiring "
-                f"(data wire on GPIO{pin}, power and ground) and that it is the right "
-                f"sensor, then unplug it and plug it back in to try again.")
-
-        def tell():
-            remote_selector.request_selection(
-                request_id=f"notice-gpio-{pin}",
-                prompt=text,
-                options=["OK"],
-                cancel_event=cancel,
-            )
-
-        threading.Thread(target=tell, daemon=True).start()
 
     def _process_answers(self):
         while True:
@@ -279,15 +239,6 @@ class SensorMonitor:
                 continue
 
             profile, pin = result
-            if pin is None:
-                key = ("manual", profile.model)
-                if key in self.sensors:
-                    print(f"  {profile.model} is already added - manual add ignored.")
-                    continue
-                sensor = build_gpio_sensor(profile, None)
-                if sensor is not None:
-                    self._add(key, sensor)
-                continue
             if ("gpio", pin) in self.sensors or pin in self.pending:
                 print(f"  GPIO{pin} is already in use - manual add ignored.")
                 continue
@@ -296,52 +247,23 @@ class SensorMonitor:
 
     # ------------------------------------------------------ reading sensors --
 
-    def _read_isolated(self, key, sensor):
-        """
-        Reads one sensor in a helper thread and waits at most READ_TIMEOUT seconds,
-        so a sensor that hangs can never freeze the reading of all the others.
-        Returns (readings, problem). A read that is still stuck from an earlier
-        cycle is not started again - it just counts as not available.
-        """
-        previous = self._readers.get(key)
-        if previous is not None and previous.is_alive():
-            return None, "still waiting on an earlier read"
-
-        box = {}
-
-        def work():
-            try:
-                box["readings"] = sensor.read_value()
-            except Exception as e:
-                box["error"] = e
-
-        thread = threading.Thread(target=work, daemon=True)
-        self._readers[key] = thread
-        thread.start()
-        thread.join(self.READ_TIMEOUT)
-
-        if thread.is_alive():
-            return None, f"read timed out after {self.READ_TIMEOUT}s"
-        if "error" in box:
-            return None, f"read error: {box['error']}"
-        return box.get("readings"), None
-
     def _read_and_publish(self):
         for key, sensor in list(self.sensors.items()):
-            readings, problem = self._read_isolated(key, sensor)
+            try:
+                readings = sensor.read_value()
+            except Exception as e:
+                print(f"  {sensor.profile.model}: read error ({e})")
+                readings = None
 
             if not readings:
-                print(f"  {sensor.profile.model}: values not available"
-                      + (f" ({problem})." if problem else "."))
+                print(f"  {sensor.profile.model}: values not available.")
                 if key[0] == "gpio":
                     self.read_failures[key] = self.read_failures.get(key, 0) + 1
                     if self.read_failures[key] >= self.READ_FAILURES_BEFORE_REMOVE:
-                        self._remove(key, "stopped responding" if key in self.ever_read
-                                     else "never responded")
+                        self._remove(key, "stopped responding")
                 continue
 
             self.read_failures.pop(key, None)
-            self.ever_read.add(key)
             for measurement_type, value in readings.items():
                 measurement = sensor.profile.get_measurement(measurement_type)
                 unit = measurement.unit if measurement else ""
@@ -385,7 +307,5 @@ class SensorMonitor:
         """Hand every pin back so the next start begins from a clean slate."""
         for entry in self.pending.values():
             entry["cancel"].set()
-        for notice in self.notices.values():
-            notice.set()
         for key in list(self.sensors):
             self._remove(key, "shutting down", notify=False)

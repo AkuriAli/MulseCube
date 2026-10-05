@@ -4,8 +4,8 @@ from drivers import digital_output_driver, mq8_esp32_driver
 
 
 def _read(device_address):
-    # device_address is the DO pin's GPIO number, or None if the DO wire isn't connected
-    alarm = digital_output_driver.read_raw(device_address) if device_address is not None else None
+    # device_address is the DO pin's GPIO number, same as before
+    alarm = digital_output_driver.read_raw(device_address)
     ppm = mq8_esp32_driver.read_ppm()
 
     if alarm is None and ppm is None:
@@ -27,7 +27,6 @@ PROFILE = SensorProfile(
     identifier=None,
     read_fn=_read,
     release_fn=digital_output_driver.release,
-    works_without_pin=True,
     measurements=[
         SensorMeasurement("hydrogen_ppm", "ppm", 100, 10000),
         SensorMeasurement("gas_alarm_triggered", "bool", 0, 1),

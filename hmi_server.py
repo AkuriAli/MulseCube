@@ -379,6 +379,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
   const STALE_AFTER_SECONDS = 10;
+
+  // Measurement types whose graph zooms in on the actual readings instead of
+  // stretching to the sensor's full rated range (which would flatten them).
+  const ZOOMED_TYPES = ['temperature'];
+  // Smallest temperature span the zoomed graph will show, in degrees. Smaller =
+  // more zoomed in. With a ~230px tall plot, 4 degrees gives ~40px per degree.
+  const ZOOMED_MIN_SPAN = 4;
   const expandedPanels = new Set();
 
   function niceNumber(value, round) {
@@ -412,6 +419,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     return ticks;
   }
 
+  // Like niceTicks, but never widens the axis: it only picks round-numbered
+  // gridlines that fall inside [min, max]. Used for the zoomed graphs.
+  function ticksWithin(min, max, tickCount) {
+    const step = niceNumber((max - min) / (tickCount - 1), true) || 1;
+    const first = Math.ceil(min / step);
+    const last = Math.floor(max / step);
+    const ticks = [];
+    for (let i = first; i <= last; i++) {
+      ticks.push(Math.round(i * step * 10000) / 10000);
+    }
+    return ticks.length >= 2 ? ticks : [min, max];
+  }
+
   function formatSecondsAgo(seconds) {
     if (seconds <= 0) return 'now';
     if (seconds < 60) return `-${Math.round(seconds)}s`;
@@ -420,7 +440,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     return secs ? `-${mins}m${secs}s` : `-${mins}m`;
   }
 
-  function drawLineChart(canvas, points, minRange, maxRange, unit) {
+  function drawLineChart(canvas, points, minRange, maxRange, unit, type) {
     const ctx = canvas.getContext('2d');
     canvas.width = canvas.clientWidth;
     canvas.height = canvas.clientHeight;
@@ -442,18 +462,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const values = points.map(p => p.value);
     const hasRange = (minRange !== null && minRange !== undefined && maxRange !== null && maxRange !== undefined);
 
-    let dataMin = Math.min(...values);
-    let dataMax = Math.max(...values);
-    let axisMin = hasRange ? Math.min(dataMin, minRange) : dataMin;
-    let axisMax = hasRange ? Math.max(dataMax, maxRange) : dataMax;
+    const dataMin = Math.min(...values);
+    const dataMax = Math.max(...values);
+    const zoomed = ZOOMED_TYPES.includes(type);
 
-    const spread = (axisMax - axisMin) || 1;
-    axisMin -= spread * 0.12;
-    axisMax += spread * 0.12;
-
-    const yTicks = niceTicks(axisMin, axisMax, 5);
-    const tickMin = yTicks[0];
-    const tickMax = yTicks[yTicks.length - 1];
+    let axisMin, axisMax, yTicks, tickMin, tickMax;
+    if (zoomed) {
+      // Fit the axis to the readings themselves (never narrower than
+      // ZOOMED_MIN_SPAN), so a one-degree change is clearly visible.
+      const center = (dataMin + dataMax) / 2;
+      const span = Math.max(dataMax - dataMin, ZOOMED_MIN_SPAN);
+      axisMin = center - span / 2 - span * 0.15;
+      axisMax = center + span / 2 + span * 0.15;
+      yTicks = ticksWithin(axisMin, axisMax, 5);
+      tickMin = axisMin;
+      tickMax = axisMax;
+    } else {
+      // Everything else (e.g. humidity) keeps the full rated range in view.
+      axisMin = hasRange ? Math.min(dataMin, minRange) : dataMin;
+      axisMax = hasRange ? Math.max(dataMax, maxRange) : dataMax;
+      const spread = (axisMax - axisMin) || 1;
+      axisMin -= spread * 0.12;
+      axisMax += spread * 0.12;
+      yTicks = niceTicks(axisMin, axisMax, 5);
+      tickMin = yTicks[0];
+      tickMax = yTicks[yTicks.length - 1];
+    }
 
     function yFor(v) {
       return padding.top + plotHeight - ((v - tickMin) / (tickMax - tickMin)) * plotHeight;
@@ -516,6 +550,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     // Expected min/max drawn as explicit labeled limit lines, not just a shaded band
     if (hasRange) {
       [{ v: minRange, label: 'min' }, { v: maxRange, label: 'max' }].forEach(({ v, label }) => {
+        if (v < tickMin || v > tickMax) {
+          // Zoomed in past this limit: keep it on the graph as an edge note
+          const above = v > tickMax;
+          ctx.fillStyle = '#A8672B';
+          ctx.font = '10px \\"IBM Plex Mono\\", ui-monospace, monospace';
+          ctx.textAlign = 'right';
+          ctx.textBaseline = above ? 'top' : 'bottom';
+          ctx.fillText(`${above ? '\\u25b2' : '\\u25bc'} ${label} ${v} (off scale)`,
+                       width - padding.right - 4,
+                       above ? padding.top + 4 : padding.top + plotHeight - 4);
+          return;
+        }
+
         const y = yFor(v);
         ctx.strokeStyle = '#A8672B';
         ctx.setLineDash([5, 4]);
@@ -566,7 +613,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     try {
       const res = await fetch(`/api/history?model=${encodeURIComponent(model)}&type=${encodeURIComponent(type)}`);
       const points = await res.json();
-      drawLineChart(canvas, points, minRange, maxRange, unit);
+      drawLineChart(canvas, points, minRange, maxRange, unit, type);
     } catch (e) {
       // ignore transient errors
     }

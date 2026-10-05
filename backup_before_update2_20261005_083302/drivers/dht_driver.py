@@ -10,23 +10,9 @@ OVERLAY_NAME = "dht11"     # the kernel's overlay for DHT11, DHT21 and DHT22
 # device that appeared right after we loaded the overlay for that pin.
 _fallback_paths = {}
 
-# Last failure reason printed per pin, so a steady failure is reported once
-# instead of every cycle - and a sensor that recovers and fails again is reported again.
-_last_failure = {}
-
 
 def _run(command):
     return subprocess.run(command, capture_output=True, text=True)
-
-
-def _note_failure(pin, message):
-    if _last_failure.get(pin) != message:
-        _last_failure[pin] = message
-        print(f"  DHT on GPIO{pin}: {message}")
-
-
-def _note_success(pin):
-    _last_failure.pop(pin, None)
 
 
 def _error_text(result):
@@ -151,11 +137,6 @@ def get_or_load_device(gpio_pin):
     if _device_path_for_pin(gpio_pin):
         return gpio_pin
 
-    # Before the kernel takes the pin, let go of gpiozero's shared connection
-    # (only if nothing is holding a pin open). This is the order that was proven
-    # to work before hot-plug existed: scan, release, then load the overlay.
-    _release_gpio_handles()
-
     for attempt in (1, 2):
         before = _iio_devices()
         try:
@@ -192,12 +173,12 @@ def read_raw(device_address):
     Returns (None, None) if the sensor isn't there or the read failed - DHT
     sensors fail an occasional read normally, but several in a row means it's gone.
     """
-    pin = device_address if isinstance(device_address, int) else None
-    path = _device_path_for_pin(pin) if pin is not None else device_address
+    if isinstance(device_address, int):
+        path = _device_path_for_pin(device_address)
+    else:
+        path = device_address       # older callers passed a sysfs path directly
 
     if not path:
-        if pin is not None:
-            _note_failure(pin, "no sensor device exists for this pin (the overlay isn't loaded)")
         return None, None
 
     try:
@@ -205,16 +186,7 @@ def read_raw(device_address):
             temp_raw = int(f.read().strip())
         with open(os.path.join(path, "in_humidityrelative_input"), "r") as f:
             humidity_raw = int(f.read().strip())
-    except OSError as e:
-        # e.g. "[Errno 110] Connection timed out" = the sensor never answered
-        if pin is not None:
-            _note_failure(pin, f"read failed: {e}")
-        return None, None
-    except ValueError:
-        if pin is not None:
-            _note_failure(pin, "read gave an unreadable value")
+    except (OSError, ValueError):
         return None, None
 
-    if pin is not None:
-        _note_success(pin)
     return temp_raw / 1000.0, humidity_raw / 1000.0

@@ -42,7 +42,6 @@ class SensorMonitor:
     UNPLUG_SCANS = 2                # LOW scans in a row = a waiting/skipped pin was unplugged
     SELF_ID_MISSES = 2              # missed checks in a row = an I2C/1-Wire sensor is gone
     READ_FAILURES_BEFORE_REMOVE = 5 # failed reads in a row = a GPIO sensor is gone
-    READ_TIMEOUT = 5                # seconds a single sensor read may take before we move on
 
     def __init__(self, publisher):
         self.publisher = publisher
@@ -54,7 +53,6 @@ class SensorMonitor:
         self.skipped = set()        # pins the user chose "Skip" for while plugged in
         self.ever_read = set()      # sensor keys that have produced at least one good reading
         self.notices = {}           # pin -> cancel Event for an open "check the wiring" message
-        self._readers = {}          # key -> helper thread currently reading that sensor
         self.low_counts = {}        # pin -> consecutive LOW scans (only tracked for pending/skipped pins)
         self.answers = queue.Queue()        # (pin, token, choice) from prompt threads
         self.manual_results = queue.Queue() # (profile, pin) from the manual-add thread
@@ -67,8 +65,6 @@ class SensorMonitor:
         sensor = self.sensors.get(key)
         model = sensor.profile.model if sensor and sensor.profile else "sensor"
         kind, where = key
-        if kind == "manual":
-            return f"{model} (analog reading only)"
         if kind == "gpio":
             return f"{model} on GPIO{where}"
         if kind == "i2c":
@@ -95,7 +91,6 @@ class SensorMonitor:
         self.misses.pop(key, None)
         self.read_failures.pop(key, None)
         self.ever_read.discard(key)
-        self._readers.pop(key, None)
         if sensor is None:
             return
 
@@ -279,15 +274,6 @@ class SensorMonitor:
                 continue
 
             profile, pin = result
-            if pin is None:
-                key = ("manual", profile.model)
-                if key in self.sensors:
-                    print(f"  {profile.model} is already added - manual add ignored.")
-                    continue
-                sensor = build_gpio_sensor(profile, None)
-                if sensor is not None:
-                    self._add(key, sensor)
-                continue
             if ("gpio", pin) in self.sensors or pin in self.pending:
                 print(f"  GPIO{pin} is already in use - manual add ignored.")
                 continue
@@ -296,43 +282,16 @@ class SensorMonitor:
 
     # ------------------------------------------------------ reading sensors --
 
-    def _read_isolated(self, key, sensor):
-        """
-        Reads one sensor in a helper thread and waits at most READ_TIMEOUT seconds,
-        so a sensor that hangs can never freeze the reading of all the others.
-        Returns (readings, problem). A read that is still stuck from an earlier
-        cycle is not started again - it just counts as not available.
-        """
-        previous = self._readers.get(key)
-        if previous is not None and previous.is_alive():
-            return None, "still waiting on an earlier read"
-
-        box = {}
-
-        def work():
-            try:
-                box["readings"] = sensor.read_value()
-            except Exception as e:
-                box["error"] = e
-
-        thread = threading.Thread(target=work, daemon=True)
-        self._readers[key] = thread
-        thread.start()
-        thread.join(self.READ_TIMEOUT)
-
-        if thread.is_alive():
-            return None, f"read timed out after {self.READ_TIMEOUT}s"
-        if "error" in box:
-            return None, f"read error: {box['error']}"
-        return box.get("readings"), None
-
     def _read_and_publish(self):
         for key, sensor in list(self.sensors.items()):
-            readings, problem = self._read_isolated(key, sensor)
+            try:
+                readings = sensor.read_value()
+            except Exception as e:
+                print(f"  {sensor.profile.model}: read error ({e})")
+                readings = None
 
             if not readings:
-                print(f"  {sensor.profile.model}: values not available"
-                      + (f" ({problem})." if problem else "."))
+                print(f"  {sensor.profile.model}: values not available.")
                 if key[0] == "gpio":
                     self.read_failures[key] = self.read_failures.get(key, 0) + 1
                     if self.read_failures[key] >= self.READ_FAILURES_BEFORE_REMOVE:

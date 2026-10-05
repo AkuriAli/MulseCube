@@ -7,8 +7,7 @@ class SensorProfile:
     """
 
     def __init__(self, model, protocol, is_analog, identifier_type, identifier,
-                 read_fn, measurements, resolve_address_fn=None, release_fn=None,
-                 works_without_pin=False):
+                 read_fn, measurements, resolve_address_fn=None, release_fn=None):
         self.model = model
         self.protocol = protocol
         self.is_analog = is_analog          # which Sensor constructor this model uses
@@ -25,9 +24,6 @@ class SensorProfile:
         # kernel overlay, close the GPIO handle) so the pin is free for the next
         # sensor. Defaults to doing nothing.
         self.release_fn = release_fn or (lambda pin: None)
-        # True if the sensor can still give useful readings with no GPIO pin wired
-        # (an MQ-8 whose DO wire isn't connected still has its analog reading).
-        self.works_without_pin = works_without_pin
 
     def get_measurement(self, measurement_type):
         """Finds this profile's SensorMeasurement for a given type (e.g. 'temperature')."""
