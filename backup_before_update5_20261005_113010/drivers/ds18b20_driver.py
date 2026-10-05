@@ -18,11 +18,6 @@ def _hardware_available():
     return os.path.isdir(W1_BASE_DIR)
 
 
-def one_wire_enabled():
-    """True if the Pi's 1-Wire interface is switched on (the folder only exists then)."""
-    return _hardware_available()
-
-
 def scan_for_ds18b20():
     """
     Returns a list of full device addresses (e.g. '28-000005e77dfa')
@@ -30,11 +25,7 @@ def scan_for_ds18b20():
     or nothing is connected.
     """
     if not _hardware_available():
-        _note_problem("1-Wire", "the Pi's 1-Wire interface is switched off, so no DS18B20 can be "
-                                "found. Turn it on with 'sudo raspi-config' (Interface Options, "
-                                "1-Wire) and reboot")
         return []
-    _note_problem("1-Wire", None)
 
     devices = []
     for entry in os.listdir(W1_BASE_DIR):

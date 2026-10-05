@@ -1,4 +1,3 @@
-import itertools
 import queue
 import threading
 import time
@@ -10,7 +9,6 @@ from profile_registry import (
     find_by_family_code,
     get_i2c_profiles,
     get_manual_registration_profiles,
-    get_one_wire_profiles,
 )
 from sensor_detector import (
     SKIP_OPTION,
@@ -19,8 +17,6 @@ from sensor_detector import (
     build_i2c_sensor,
     choose_manual_sensor,
     model_label,
-    one_wire_help,
-    one_wire_label,
 )
 
 
@@ -59,7 +55,6 @@ class SensorMonitor:
         self.ever_read = set()      # sensor keys that have produced at least one good reading
         self.notices = {}           # pin -> cancel Event for an open "check the wiring" message
         self._readers = {}          # key -> helper thread currently reading that sensor
-        self._notice_ids = itertools.count(1)   # unique ids for messages that aren't tied to a pin
         self.low_counts = {}        # pin -> consecutive LOW scans (only tracked for pending/skipped pins)
         self.answers = queue.Queue()        # (pin, token, choice) from prompt threads
         self.manual_results = queue.Queue() # (profile, pin) from the manual-add thread
@@ -191,9 +186,7 @@ class SensorMonitor:
         self.pending[pin] = {"cancel": cancel}
 
         profiles = get_manual_registration_profiles()
-        options = ([model_label(p) for p in profiles]
-                   + [one_wire_label(p) for p in get_one_wire_profiles()]
-                   + [SKIP_OPTION])
+        options = [model_label(p) for p in profiles] + [SKIP_OPTION]
         prompt = f"Something was plugged into GPIO{pin}. Which sensor is it?"
         print(f"? Something detected on GPIO{pin}")
 
@@ -208,30 +201,23 @@ class SensorMonitor:
 
         threading.Thread(target=ask, daemon=True).start()
 
-    def _show_notice(self, slot, request_id, text):
+    def _open_notice(self, pin, model):
         """Shows a message on the dashboard (a popup with one OK button)."""
-        previous = self.notices.pop(slot, None)
-        if previous is not None:
-            previous.set()                  # replace an older message in the same place
         cancel = threading.Event()
-        self.notices[slot] = cancel
+        self.notices[pin] = cancel
+        text = (f"The {model} on GPIO{pin} never gave a reading. Check the wiring "
+                f"(data wire on GPIO{pin}, power and ground) and that it is the right "
+                f"sensor, then unplug it and plug it back in to try again.")
 
         def tell():
             remote_selector.request_selection(
-                request_id=request_id,
+                request_id=f"notice-gpio-{pin}",
                 prompt=text,
                 options=["OK"],
                 cancel_event=cancel,
             )
 
         threading.Thread(target=tell, daemon=True).start()
-
-    def _open_notice(self, pin, model):
-        """The 'never gave a reading' message for a sensor on a GPIO pin."""
-        text = (f"The {model} on GPIO{pin} never gave a reading. Check the wiring "
-                f"(data wire on GPIO{pin}, power and ground) and that it is the right "
-                f"sensor, then unplug it and plug it back in to try again.")
-        self._show_notice(pin, f"notice-gpio-{pin}", text)
 
     def _process_answers(self):
         while True:
@@ -249,14 +235,6 @@ class SensorMonitor:
                 continue            # cancelled, or the dashboard was unreachable
             if choice == SKIP_OPTION:
                 self.skipped.add(pin)
-                continue
-
-            one_wire = next((p for p in get_one_wire_profiles() if one_wire_label(p) == choice), None)
-            if one_wire is not None:
-                # Nothing to set up on this pin: explain instead, and leave the pin alone
-                # until it is physically unplugged.
-                self.skipped.add(pin)
-                self._show_notice(pin, f"notice-gpio-{pin}", one_wire_help(one_wire, pin))
                 continue
 
             profile = next((p for p in get_manual_registration_profiles()
@@ -298,11 +276,6 @@ class SensorMonitor:
             except queue.Empty:
                 return
             if result is None:
-                continue
-
-            if isinstance(result[0], str):          # ("one_wire", profile): explain, don't add
-                self._show_notice("one-wire-help", f"notice-one-wire-{next(self._notice_ids)}",
-                                  one_wire_help(result[1]))
                 continue
 
             profile, pin = result

@@ -45,11 +45,6 @@ def get_manual_registration_profiles():
     return [p for p in PROFILES if p.identifier_type == "manual_gpio"]
 
 
-def get_one_wire_profiles():
-    """Sensors that identify themselves over 1-Wire (e.g. DS18B20)."""
-    return [p for p in PROFILES if p.identifier_type == "family_code"]
-
-
 def get_all_profiles():
     return PROFILES
 
