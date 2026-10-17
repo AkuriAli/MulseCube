@@ -4,7 +4,6 @@ into a Sensor object, and the dashboard questions for manually-added sensors.
 """
 from sensor import Sensor
 from profile_registry import get_manual_registration_profiles, get_one_wire_profiles
-from drivers import ds18b20_driver
 import remote_selector
 
 SKIP_OPTION = "Skip this port"
@@ -17,23 +16,16 @@ def model_label(profile):
 
 
 def one_wire_label(profile):
-    """How a 1-Wire sensor appears in the lists. It can't be set up from them - see one_wire_help."""
-    return f"{profile.model} (1-Wire - GPIO4 only)"
+    """How a 1-Wire sensor appears in the lists."""
+    return f"{profile.model} (1-Wire)"
 
 
-def one_wire_help(profile, pin=None):
-    """What to tell someone who picked a 1-Wire sensor from a list."""
-    where = f"GPIO{pin}" if pin is not None else "an ordinary pin"
-    text = (f"The {profile.model} is a 1-Wire sensor, so it can't be set up on {where} - and "
-            f"it never needs to be picked from this list, because it identifies itself. "
-            f"Wire its DATA line to GPIO4 (physical pin 7), plus 3.3 V and ground, with a "
-            f"4.7 kOhm resistor between DATA and 3.3 V. It then appears on the dashboard by "
-            f"itself. To use a different pin, add the line dtoverlay=w1-gpio,gpiopin=N to "
-            f"/boot/firmware/config.txt and reboot.")
-    if not ds18b20_driver.one_wire_enabled():
-        text += (" 1-Wire is also still switched off: run 'sudo raspi-config', choose "
-                 "Interface Options, then 1-Wire, enable it, and reboot.")
-    return text
+def one_wire_help(model, pin):
+    """What to tell someone when a sensor they said was a 1-Wire one didn't answer."""
+    return (f"No {model} answered on GPIO{pin}. Check that its DATA wire is on GPIO{pin}, that a "
+            f"4.7 kOhm resistor joins DATA to 3.3 V, and that power and ground are right "
+            f"(flat side towards you, legs down: GND, DATA, 3.3 V). Then unplug it and plug it "
+            f"back in to try again.")
 
 
 def build_1wire_sensor(profile, device_address):
@@ -106,11 +98,8 @@ def choose_manual_sensor(free_pins):
     if choice is None or choice == CANCEL_OPTION:
         return None
 
-    chosen_one_wire = next((p for p in one_wire if one_wire_label(p) == choice), None)
-    if chosen_one_wire is not None:
-        return ("one_wire", chosen_one_wire)       # nothing to set up - the caller explains
-
-    profile = next((p for p in profiles if model_label(p) == choice), None)
+    profile = next((p for p in profiles if model_label(p) == choice), None) \
+        or next((p for p in one_wire if one_wire_label(p) == choice), None)
     if profile is None:
         return None
 

@@ -5,6 +5,7 @@ from data_publisher import DataPublisher
 from remote_selector import wait_for_hmi
 from sensor_monitor import SensorMonitor
 from drivers import dht_driver
+import onewire_bus
 
 WEBAPP_URL = "http://localhost:5000/api/sensor-data"
 
@@ -15,6 +16,7 @@ def main():
     # Start from a clean slate: remove any DHT overlays left over from a
     # previous run, which would otherwise keep the kernel holding those pins.
     dht_driver.cleanup_stale_overlays()
+    onewire_bus.cleanup_stale()
 
     publisher = DataPublisher(WEBAPP_URL)
     monitor = SensorMonitor(publisher)
@@ -30,6 +32,7 @@ def main():
     finally:
         monitor.shutdown()
         dht_driver.cleanup_stale_overlays()
+        onewire_bus.cleanup_stale()
 
 
 if __name__ == "__main__":

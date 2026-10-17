@@ -1,4 +1,5 @@
 import itertools
+import onewire_bus
 import queue
 import threading
 import time
@@ -46,6 +47,7 @@ class SensorMonitor:
     UNPLUG_SCANS = 2                # LOW scans in a row = a waiting/skipped pin was unplugged
     SELF_ID_MISSES = 2              # missed checks in a row = an I2C/1-Wire sensor is gone
     READ_FAILURES_BEFORE_REMOVE = 5 # failed reads in a row = a GPIO sensor is gone
+    BUS_EMPTY_CHECKS = 3            # cycles with no sensor left on a 1-Wire bus before it is removed
     READ_TIMEOUT = 5                # seconds a single sensor read may take before we move on
 
     def __init__(self, publisher):
@@ -59,6 +61,10 @@ class SensorMonitor:
         self.ever_read = set()      # sensor keys that have produced at least one good reading
         self.notices = {}           # pin -> cancel Event for an open "check the wiring" message
         self._readers = {}          # key -> helper thread currently reading that sensor
+        self.probing = set()                    # pins where a 1-Wire bus is being tried
+        self.explicit_probes = set()            # ...because the person chose DS18B20 themselves
+        self.probe_results = queue.Queue()      # (pin, sensor ids found) from the waiting threads
+        self.bus_empty_counts = {}              # pin -> cycles a 1-Wire bus has had no sensor
         self._notice_ids = itertools.count(1)   # unique ids for messages that aren't tied to a pin
         self.low_counts = {}        # pin -> consecutive LOW scans (only tracked for pending/skipped pins)
         self.answers = queue.Queue()        # (pin, token, choice) from prompt threads
@@ -80,8 +86,18 @@ class SensorMonitor:
             return f"{model} on I2C {hex(where)}"
         return f"{model} on 1-Wire {where}"
 
+    def _sensor_id(self, key):
+        """A stable name for one physical sensor, so recordings can tell two of the same model apart."""
+        kind, where = key
+        if kind == "gpio":
+            return f"GPIO{where}"
+        if kind == "i2c":
+            return f"I2C {hex(where)}"
+        return str(where)            # 1-Wire serial number, or the model name for a manual sensor
+
     def _owned_pins(self):
-        return {where for (kind, where) in self.sensors if kind == "gpio"}
+        return ({where for (kind, where) in self.sensors if kind == "gpio"}
+                | onewire_bus.owned_pins() | self.probing)
 
     def _free_pins(self):
         owned = self._owned_pins()
@@ -167,12 +183,74 @@ class SensorMonitor:
             if high:
                 self.low_counts.pop(pin, None)
                 if pin not in self.pending and pin not in self.skipped:
-                    self._open_prompt(pin)
+                    self._start_probe(pin)
             elif pin in self.pending or pin in self.skipped:
                 count = self.low_counts.get(pin, 0) + 1
                 self.low_counts[pin] = count
                 if count >= self.UNPLUG_SCANS:
                     self._forget_pin(pin)
+
+    def _start_probe(self, pin, explicit=False):
+        """
+        Something is on this pin. First see whether it is a DS18B20 - they identify
+        themselves on a 1-Wire bus, so no question is needed. If nothing answers,
+        ask the person which sensor it is.
+        """
+        try:
+            onewire_bus.begin(pin)
+        except onewire_bus.OneWireError as e:
+            print(f"  GPIO{pin}: could not try 1-Wire ({e}).")
+            self._after_failed_probe(pin, explicit)
+            return
+
+        self.probing.add(pin)
+        if explicit:
+            self.explicit_probes.add(pin)
+        print(f"  GPIO{pin}: checking whether a DS18B20 is connected ...")
+
+        def wait():
+            self.probe_results.put((pin, onewire_bus.wait_for_sensors(pin)))
+
+        threading.Thread(target=wait, daemon=True).start()
+
+    def _after_failed_probe(self, pin, explicit):
+        if explicit:        # they said it was a DS18B20, and nothing answered: help them find out why
+            self.skipped.add(pin)
+            model = (get_one_wire_profiles() or [None])[0]
+            self._show_notice(pin, f"notice-gpio-{pin}", one_wire_help(model.model if model else "DS18B20", pin))
+        else:
+            self._open_prompt(pin)
+
+    def _process_probe_results(self):
+        while True:
+            try:
+                pin, found = self.probe_results.get_nowait()
+            except queue.Empty:
+                return
+            self.probing.discard(pin)
+            explicit = pin in self.explicit_probes
+            self.explicit_probes.discard(pin)
+            if found:
+                print(f"  GPIO{pin}: found {', '.join(found)} - the 1-Wire bus stays.")
+                self.bus_empty_counts[pin] = 0
+            else:
+                onewire_bus.release(pin)
+                self._after_failed_probe(pin, explicit)
+
+    def _release_empty_buses(self):
+        """A 1-Wire bus whose sensor was unplugged is removed, which frees the pin for the next sensor."""
+        for pin in list(onewire_bus.owned_pins()):
+            if pin in self.probing:
+                continue
+            if onewire_bus.has_sensors(pin):
+                self.bus_empty_counts[pin] = 0
+                continue
+            count = self.bus_empty_counts.get(pin, 0) + 1
+            self.bus_empty_counts[pin] = count
+            if count >= self.BUS_EMPTY_CHECKS:
+                print(f"  GPIO{pin}: the DS18B20 was unplugged - 1-Wire bus removed.")
+                onewire_bus.release(pin)
+                self.bus_empty_counts.pop(pin, None)
 
     def _forget_pin(self, pin):
         """The pin went quiet: withdraw any open question and reset what we remember about it."""
@@ -253,10 +331,7 @@ class SensorMonitor:
 
             one_wire = next((p for p in get_one_wire_profiles() if one_wire_label(p) == choice), None)
             if one_wire is not None:
-                # Nothing to set up on this pin: explain instead, and leave the pin alone
-                # until it is physically unplugged.
-                self.skipped.add(pin)
-                self._show_notice(pin, f"notice-gpio-{pin}", one_wire_help(one_wire, pin))
+                self._start_probe(pin, explicit=True)       # they say it's a DS18B20: try again
                 continue
 
             profile = next((p for p in get_manual_registration_profiles()
@@ -300,12 +375,13 @@ class SensorMonitor:
             if result is None:
                 continue
 
-            if isinstance(result[0], str):          # ("one_wire", profile): explain, don't add
-                self._show_notice("one-wire-help", f"notice-one-wire-{next(self._notice_ids)}",
-                                  one_wire_help(result[1]))
-                continue
-
             profile, pin = result
+            if profile.identifier_type == "family_code":    # a DS18B20: try a 1-Wire bus on that pin
+                if pin in self._owned_pins() or pin in self.pending:
+                    print(f"  GPIO{pin} is already in use - manual add ignored.")
+                else:
+                    self._start_probe(pin, explicit=True)
+                continue
             if pin is None:
                 key = ("manual", profile.model)
                 if key in self.sensors:
@@ -376,6 +452,7 @@ class SensorMonitor:
 
                 self.publisher.publish({
                     "model": sensor.profile.model,
+                    "sensor_id": self._sensor_id(key),
                     "type": measurement_type,
                     "unit": unit,
                     "value": value,
@@ -391,12 +468,14 @@ class SensorMonitor:
         self._sync_self_identifying()
         self._process_answers()
         self._process_manual_results()
+        self._process_probe_results()
 
         now = time.time()
         if now - self._last_gpio_scan >= self.GPIO_SCAN_INTERVAL:
             self._scan_gpio()
             self._last_gpio_scan = time.time()
 
+        self._release_empty_buses()
         self._check_manual_request()
         self._read_and_publish()
 
@@ -416,3 +495,5 @@ class SensorMonitor:
             notice.set()
         for key in list(self.sensors):
             self._remove(key, "shutting down", notify=False)
+        onewire_bus.release_all()
+        self.probing.clear()
