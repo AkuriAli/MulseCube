@@ -1,19 +1,22 @@
 #!/bin/bash
-# MulseCube update 7: a DS18B20 now works on ANY port pin, found automatically.
-#   * When something is plugged into a port, the program first tries a 1-Wire bus on
-#     that pin. A DS18B20 answers by itself - no question is asked.
-#   * If nothing answers, the bus is removed and the usual "which sensor?" question
-#     appears (DHT11 / DHT22 / MQ-8 / DS18B20).
-#   * Unplugging the DS18B20 removes the bus and frees the pin again.
+# MulseCube update 9: presence pins (port detection).
+#   * Each port gets its own presence pin. The plug joins the presence wire to ground, so
+#     the program knows exactly when a port is plugged in or unplugged - including the MQ-8.
+#   * I2C sensors are matched to their port automatically; a DS18B20 is found on the port's
+#     data wire; anything else asks "which sensor is it?" (naming the port).
+#   * An MQ-8 reads the ESP32 channel of whichever port it is in.
+#   * Your wiring goes in ports_config.py. It is OFF until you set USE_PRESENCE_PINS = True,
+#     so nothing changes until your ports are wired. Your edits to it are never overwritten.
+#   * Your MQ-8 calibration is kept: that driver is patched in place, not replaced.
 #
-# Run this from inside your MulseCube folder:   bash apply_update_7.sh
+# Run this from inside your MulseCube folder:   bash apply_update_9.sh
 
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-for item in main.py sensor_monitor.py hmi_server.py drivers profiles; do
+for item in main.py sensor_monitor.py hmi_server.py drivers profiles drivers/mq8_esp32_driver.py; do
   if [ ! -e "$item" ]; then
     echo "Can't find '$item' here ($PROJECT_DIR)."
     echo "Put this script inside your MulseCube folder and run it from there."
@@ -23,33 +26,37 @@ done
 
 OWNER="$(stat -c %U "$PROJECT_DIR")"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-BACKUP_DIR="backup_before_update7_$STAMP"
+BACKUP_DIR="backup_before_update9_$STAMP"
 
 FILES=(
-  "onewire_bus.py"
   "sensor_monitor.py"
-  "sensor_detector.py"
-  "main.py"
+  "ports.py"
+  "drivers/digital_output_driver.py"
+  "profiles/mq8_profile.py"
 )
+# files we may touch besides the ones above (backed up if they exist; removed again on rollback if we created them)
+EXTRA=("ports_config.py" "drivers/mq8_esp32_driver.py")
 
 echo "Backing up your current files to $BACKUP_DIR/ ..."
-for f in "${FILES[@]}"; do
+for f in "${FILES[@]}" "${EXTRA[@]}"; do
   if [ -f "$f" ]; then
     mkdir -p "$BACKUP_DIR/$(dirname "$f")"
     cp -p "$f" "$BACKUP_DIR/$f"
   fi
 done
 
+fix_owner() { if [ "$EUID" -eq 0 ]; then chown "$OWNER":"$OWNER" "$1"; fi; }
+
 write_file() {
   mkdir -p "$(dirname "$1")"
   cat > "$1"
-  if [ "$EUID" -eq 0 ]; then chown "$OWNER":"$OWNER" "$1"; fi
+  fix_owner "$1"
 }
 
 restore_backup() {
   echo
   echo "Restoring your original files from $BACKUP_DIR/ ..."
-  for f in "${FILES[@]}"; do
+  for f in "${FILES[@]}" "${EXTRA[@]}"; do
     if [ -f "$BACKUP_DIR/$f" ]; then
       cp -p "$BACKUP_DIR/$f" "$f"
     else
@@ -60,179 +67,17 @@ restore_backup() {
 }
 
 echo "Writing new files ..."
-write_file "onewire_bus.py" << '__MULSECUBE_EOF__'
-"""
-Starts and stops 1-Wire buses on chosen GPIO pins while the Pi is running, so a
-DS18B20 can be plugged into any port - not just GPIO4.
-
-The Pi's 1-Wire driver listens on one pin, chosen by an overlay. Loading that
-overlay for a pin (`dtoverlay w1-gpio gpiopin=<pin>`) creates a new bus there,
-and any DS18B20 on it then shows up in /sys/bus/w1/devices like one on GPIO4.
-(Overlays loaded at runtime can be removed again; ones written in config.txt can't.)
-
-Usage by the monitor:  begin(pin) -> wait_for_sensors(pin) -> keep it, or release(pin).
-"""
-import os
-import re
-import subprocess
-import time
-
-from drivers import ds18b20_driver
-
-OVERLAY_NAME = "w1-gpio"        # the Pi 5 lists it as 'w1-gpio-pi5'; the pattern below allows both
-WAIT_SECONDS = 20               # how long to wait for a sensor to answer on a new bus
-
-_buses = {}                     # pin -> name of its bus, e.g. 'w1_bus_master2'
-
-
-class OneWireError(Exception):
-    """The bus couldn't be started. The message is safe to show to a person."""
-
-
-def _run(command):
-    return subprocess.run(command, capture_output=True, text=True)
-
-
-def _error_text(result):
-    return result.stderr.strip() or result.stdout.strip() or "no details given"
-
-
-def _release_gpio_handles():
-    """The overlay needs the pin free, so let go of any handle the pin scanner holds."""
-    try:
-        from gpio_scanner import release_idle_factory
-        release_idle_factory()
-    except Exception:
-        pass
-
-
-def _masters():
-    try:
-        return {e for e in os.listdir(ds18b20_driver.W1_BASE_DIR) if e.startswith("w1_bus_master")}
-    except OSError:
-        return set()
-
-
-def _slaves(master):
-    """DS18B20 ids currently answering on one bus."""
-    path = os.path.join(ds18b20_driver.W1_BASE_DIR, master, "w1_master_slaves")
-    try:
-        with open(path) as f:
-            return [line.strip() for line in f if line.strip().startswith("28-")]
-    except OSError:
-        return []
-
-
-def _runtime_overlays():
-    """[(index, pin)] for 1-Wire overlays loaded at runtime."""
-    try:
-        listing = _run(["dtoverlay", "-l"]).stdout
-    except FileNotFoundError:
-        return []
-    found = []
-    for line in listing.splitlines():
-        match = re.match(rf"\s*(\d+)\s*[:_]\s*{OVERLAY_NAME}\S*(.*)$", line)
-        if match:
-            pin = re.search(r"gpiopin\s*=\s*(\d+)", match.group(2))
-            found.append((int(match.group(1)), int(pin.group(1)) if pin else None))
-    return found
-
-
-def _remove_overlay_for_pin(pin):
-    for index, overlay_pin in sorted(_runtime_overlays(), reverse=True):
-        if overlay_pin == pin:
-            result = _run(["dtoverlay", "-r", str(index)])
-            if result.returncode != 0:
-                print(f"  WARNING: could not remove the 1-Wire bus on GPIO{pin}: {_error_text(result)}")
-                return False
-            return True
-    return True
-
-
-# ------------------------------------------------------------------ public --
-
-def owned_pins():
-    return set(_buses)
-
-
-def begin(pin):
-    """Starts a bus on `pin`. Quick; call it from the main thread. Raises OneWireError."""
-    if pin in _buses:
-        return
-    _release_gpio_handles()
-    before = _masters()
-    try:
-        result = _run(["dtoverlay", OVERLAY_NAME, f"gpiopin={pin}"])
-    except FileNotFoundError:
-        raise OneWireError("the 'dtoverlay' tool isn't available on this system")
-    if result.returncode != 0:
-        raise OneWireError(_error_text(result))
-
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        new = _masters() - before
-        if new:
-            _buses[pin] = sorted(new)[0]
-            return
-        time.sleep(0.1)
-    _remove_overlay_for_pin(pin)
-    raise OneWireError("the Pi did not create a 1-Wire bus")
-
-
-def wait_for_sensors(pin, timeout=None, poll=1.0):
-    """Waits until a DS18B20 answers on the bus. Slow; call it from a worker thread."""
-    master = _buses.get(pin)
-    if master is None:
-        return []
-    end = time.time() + (WAIT_SECONDS if timeout is None else timeout)
-    while time.time() < end:
-        found = _slaves(master)
-        if found:
-            return found
-        time.sleep(poll)
-    return _slaves(master)
-
-
-def has_sensors(pin):
-    master = _buses.get(pin)
-    return bool(master and _slaves(master))
-
-
-def release(pin):
-    """Stops the bus on `pin` and hands the pin back."""
-    _buses.pop(pin, None)
-    _release_gpio_handles()
-    return _remove_overlay_for_pin(pin)
-
-
-def release_all():
-    for pin in list(_buses):
-        release(pin)
-
-
-def cleanup_stale():
-    """Removes 1-Wire buses an earlier run left loaded. Any runtime one is ours."""
-    _buses.clear()
-    for _ in range(20):
-        overlays = _runtime_overlays()
-        if not overlays:
-            return
-        index = max(i for i, _pin in overlays)
-        result = _run(["dtoverlay", "-r", str(index)])
-        if result.returncode != 0:
-            print(f"  WARNING: could not remove 1-Wire overlay {index}: {_error_text(result)}")
-            return
-__MULSECUBE_EOF__
 write_file "sensor_monitor.py" << '__MULSECUBE_EOF__'
 import itertools
 import onewire_bus
+import ports as port_settings
 import queue
 import threading
 import time
 
 import gpio_scanner
 import remote_selector
-from drivers import ds18b20_driver, i2c_bus_driver
+from drivers import digital_output_driver, ds18b20_driver, i2c_bus_driver
 from profile_registry import (
     find_by_family_code,
     get_i2c_profiles,
@@ -249,6 +94,9 @@ from sensor_detector import (
     one_wire_help,
     one_wire_label,
 )
+
+
+I2C_OPTION = "I2C sensor (found automatically)"
 
 
 class SensorMonitor:
@@ -273,6 +121,10 @@ class SensorMonitor:
     UNPLUG_SCANS = 2                # LOW scans in a row = a waiting/skipped pin was unplugged
     SELF_ID_MISSES = 2              # missed checks in a row = an I2C/1-Wire sensor is gone
     READ_FAILURES_BEFORE_REMOVE = 5 # failed reads in a row = a GPIO sensor is gone
+    PORT_SCAN_INTERVAL = 1.0        # seconds between looks at the presence pins
+    PLUG_CONFIRM_READS = 2          # presence readings in a row before a plug / unplug is believed
+    I2C_GRACE_SECONDS = 4           # after a plug-in, how long to wait for an I2C sensor to answer
+    I2C_MATCH_SECONDS = 8           # an I2C sensor that appeared this close to a plug-in belongs to it
     BUS_EMPTY_CHECKS = 3            # cycles with no sensor left on a 1-Wire bus before it is removed
     READ_TIMEOUT = 5                # seconds a single sensor read may take before we move on
 
@@ -297,6 +149,12 @@ class SensorMonitor:
         self.manual_results = queue.Queue() # (profile, pin) from the manual-add thread
         self.manual_thread = None
         self._last_gpio_scan = 0.0
+        self._added_at = {}                 # sensor key -> when it was connected
+        self._last_port_scan = 0.0
+        self.use_presence, port_list = port_settings.load()
+        self.ports = [dict(p, state="empty", plugged_reads=0, unplugged_reads=0, since=0.0, owner=None)
+                      for p in port_list]
+        self.port_by_data = {p["data"]: p for p in self.ports}
 
     # ------------------------------------------------------------ helpers --
 
@@ -307,7 +165,8 @@ class SensorMonitor:
         if kind == "manual":
             return f"{model} (analog reading only)"
         if kind == "gpio":
-            return f"{model} on GPIO{where}"
+            port = self.port_by_data.get(where) if self.use_presence else None
+            return f"{model} in {port['name']}" if port else f"{model} on GPIO{where}"
         if kind == "i2c":
             return f"{model} on I2C {hex(where)}"
         return f"{model} on 1-Wire {where}"
@@ -334,6 +193,7 @@ class SensorMonitor:
         self.misses.pop(key, None)
         self.read_failures.pop(key, None)
         self.ever_read.discard(key)
+        self._added_at[key] = time.time()
         print(f"+ Sensor connected: {self._describe(key)}")
 
     def _remove(self, key, reason, notify=True):
@@ -343,6 +203,7 @@ class SensorMonitor:
         self.read_failures.pop(key, None)
         self.ever_read.discard(key)
         self._readers.pop(key, None)
+        self._added_at.pop(key, None)
         if sensor is None:
             return
 
@@ -456,6 +317,10 @@ class SensorMonitor:
             self.probing.discard(pin)
             explicit = pin in self.explicit_probes
             self.explicit_probes.discard(pin)
+            port = self.port_by_data.get(pin) if self.use_presence else None
+            if port is not None and port["state"] == "empty":
+                onewire_bus.release(pin)        # it was unplugged while we were checking
+                continue
             if found:
                 print(f"  GPIO{pin}: found {', '.join(found)} - the 1-Wire bus stays.")
                 self.bus_empty_counts[pin] = 0
@@ -478,6 +343,74 @@ class SensorMonitor:
                 onewire_bus.release(pin)
                 self.bus_empty_counts.pop(pin, None)
 
+    # ------------------------------------------------ ports (presence pins) --
+
+    def _pin_label(self, pin):
+        port = self.port_by_data.get(pin) if self.use_presence else None
+        return f"{port['name']} (GPIO{pin})" if port else f"GPIO{pin}"
+
+    def _port_owned_keys(self):
+        return {p["owner"]["key"] for p in self.ports if p["owner"]}
+
+    def _scan_ports(self):
+        """Read each port's presence pin. A plug / unplug is only believed after a few readings in a row."""
+        for port in self.ports:
+            plugged = digital_output_driver.read_presence(port["presence"])
+            if plugged is None:
+                continue
+            if plugged:
+                port["unplugged_reads"] = 0
+                port["plugged_reads"] += 1
+                if port["state"] == "empty" and port["plugged_reads"] >= self.PLUG_CONFIRM_READS:
+                    self._port_plugged(port)
+            else:
+                port["plugged_reads"] = 0
+                port["unplugged_reads"] += 1
+                if port["state"] != "empty" and port["unplugged_reads"] >= self.PLUG_CONFIRM_READS:
+                    self._port_unplugged(port)
+        self._advance_ports()
+
+    def _port_plugged(self, port):
+        port["state"] = "waiting"
+        port["since"] = time.time()
+        print(f"  {port['name']}: something was plugged in.")
+
+    def _advance_ports(self):
+        """
+        A newly plugged port first waits a few seconds: an I2C sensor announces itself on the
+        shared bus, so if exactly one new I2C sensor appeared at the same moment, it is this
+        port's. Otherwise the port's data wire is checked for a DS18B20, and failing that the
+        person is asked which sensor it is.
+        """
+        now = time.time()
+        waiting = [p for p in self.ports if p["state"] == "waiting"]
+        for port in waiting:
+            owned = self._port_owned_keys()
+            candidates = [k for k in self.sensors if k[0] == "i2c" and k not in owned
+                          and abs(self._added_at.get(k, 0) - port["since"]) <= self.I2C_MATCH_SECONDS]
+            crowded = [p for p in waiting if p is not port
+                       and abs(p["since"] - port["since"]) <= self.I2C_MATCH_SECONDS]
+            if len(candidates) == 1 and not crowded:
+                port["owner"] = {"kind": "i2c", "key": candidates[0]}
+                port["state"] = "occupied"
+                print(f"  {port['name']}: {self._describe(candidates[0])}")
+            elif now - port["since"] >= self.I2C_GRACE_SECONDS:
+                port["state"] = "identifying"
+                self._start_probe(port["data"])
+
+    def _port_unplugged(self, port):
+        """Everything tied to this port goes: sensors, 1-Wire bus, open questions and messages."""
+        data = port["data"]
+        print(f"  {port['name']}: unplugged.")
+        self._forget_pin(data)
+        if data in onewire_bus.owned_pins():
+            onewire_bus.release(data)
+        key = ("gpio", data)
+        if key in self.sensors:
+            self._remove(key, "unplugged")
+        port["state"] = "empty"
+        port["owner"] = None
+
     def _forget_pin(self, pin):
         """The pin went quiet: withdraw any open question and reset what we remember about it."""
         entry = self.pending.pop(pin, None)
@@ -497,9 +430,11 @@ class SensorMonitor:
         profiles = get_manual_registration_profiles()
         options = ([model_label(p) for p in profiles]
                    + [one_wire_label(p) for p in get_one_wire_profiles()]
+                   + ([I2C_OPTION] if self.use_presence else [])
                    + [SKIP_OPTION])
-        prompt = f"Something was plugged into GPIO{pin}. Which sensor is it?"
-        print(f"? Something detected on GPIO{pin}")
+        label = self._pin_label(pin)
+        prompt = f"Something was plugged into {label}. Which sensor is it?"
+        print(f"? Something detected on {label}")
 
         def ask():
             choice = remote_selector.request_selection(
@@ -555,6 +490,10 @@ class SensorMonitor:
                 self.skipped.add(pin)
                 continue
 
+            if choice == I2C_OPTION:
+                print(f"  {self._pin_label(pin)}: noted as an I2C sensor - it appears by itself once it answers.")
+                continue
+
             one_wire = next((p for p in get_one_wire_profiles() if one_wire_label(p) == choice), None)
             if one_wire is not None:
                 self._start_probe(pin, explicit=True)       # they say it's a DS18B20: try again
@@ -574,6 +513,11 @@ class SensorMonitor:
             print(f"  Could not set up {profile.model} on GPIO{pin} - "
                   f"unplug and replug it to try again.")
             return
+        port = self.port_by_data.get(pin) if self.use_presence else None
+        if port is not None and profile.works_without_pin:
+            # an analog sensor in a numbered port: read the ESP32 channel that port's data wire feeds
+            sensor.device_address = {"adc_channel": port["adc_channel"]}
+            sensor.gpio_ports = []
         self._add(("gpio", pin), sensor)
 
     # ------------------------------------------- manual add (dashboard button) --
@@ -697,7 +641,11 @@ class SensorMonitor:
         self._process_probe_results()
 
         now = time.time()
-        if now - self._last_gpio_scan >= self.GPIO_SCAN_INTERVAL:
+        if self.use_presence:
+            if now - self._last_port_scan >= self.PORT_SCAN_INTERVAL:
+                self._scan_ports()
+                self._last_port_scan = time.time()
+        elif now - self._last_gpio_scan >= self.GPIO_SCAN_INTERVAL:
             self._scan_gpio()
             self._last_gpio_scan = time.time()
 
@@ -723,173 +671,238 @@ class SensorMonitor:
             self._remove(key, "shutting down", notify=False)
         onewire_bus.release_all()
         self.probing.clear()
+        digital_output_driver.release_presence_pins()
 __MULSECUBE_EOF__
-write_file "sensor_detector.py" << '__MULSECUBE_EOF__'
-"""
-Small building blocks used by the sensor monitor: turning "something was found"
-into a Sensor object, and the dashboard questions for manually-added sensors.
-"""
-from sensor import Sensor
-from profile_registry import get_manual_registration_profiles, get_one_wire_profiles
-import remote_selector
+write_file "ports.py" << '__MULSECUBE_EOF__'
+"""Reads and checks the port table in ports_config.py."""
 
-SKIP_OPTION = "Skip this port"
-CANCEL_OPTION = "Cancel"
-NO_PIN_OPTION = "No DO wire - use the analog reading only"
+# GPIO0/1 are the HAT identification pins, GPIO2/3 are the I2C bus, GPIO4 is the always-on 1-Wire pin.
+NOT_FOR_PORTS = {0, 1, 2, 3, 4}
 
 
-def model_label(profile):
-    return f"{profile.model} ({profile.protocol})"
-
-
-def one_wire_label(profile):
-    """How a 1-Wire sensor appears in the lists."""
-    return f"{profile.model} (1-Wire)"
-
-
-def one_wire_help(model, pin):
-    """What to tell someone when a sensor they said was a 1-Wire one didn't answer."""
-    return (f"No {model} answered on GPIO{pin}. Check that its DATA wire is on GPIO{pin}, that a "
-            f"4.7 kOhm resistor joins DATA to 3.3 V, and that power and ground are right "
-            f"(flat side towards you, legs down: GND, DATA, 3.3 V). Then unplug it and plug it "
-            f"back in to try again.")
-
-
-def build_1wire_sensor(profile, device_address):
-    sensor = Sensor.digital(
-        name=profile.model,
-        family=profile.model,
-        familycode=device_address.split("-")[0],
-        protocol=profile.protocol,
-        device_address=device_address,
-    )
-    sensor.apply_profile(profile)
-    return sensor
-
-
-def build_i2c_sensor(profile, address):
-    sensor = Sensor.digital(
-        name=profile.model,
-        family=profile.model,
-        familycode=hex(address),
-        protocol=profile.protocol,
-        device_address=address,
-    )
-    sensor.apply_profile(profile)
-    return sensor
-
-
-def build_gpio_sensor(profile, pin):
+def load():
     """
-    Sets up a sensor on a GPIO pin. Returns None if the pin couldn't be set up
-    (for a DHT that means the kernel overlay failed to load).
+    Returns (use_presence_pins, ports). If the table has a mistake, it is reported and
+    presence mode stays off, so a typo can never stop the program from starting.
     """
-    if pin is None:
-        if not profile.works_without_pin:
-            return None
-        address = None
-    else:
-        address = profile.resolve_address_fn(pin)
-        if address is None:
-            return None
-
-    if profile.is_analog:
-        sensor = Sensor.analog(name=profile.model, gnd=None, vcc=None, pincount=1)
-    else:
-        sensor = Sensor.digital(name=profile.model, family=profile.model,
-                                familycode="", protocol=profile.protocol)
-
-    sensor.device_address = address
-    sensor.gpio_ports = [pin] if pin is not None else []
-    sensor.apply_profile(profile)
-    return sensor
-
-
-def choose_manual_sensor(free_pins):
-    """
-    Asks, on the dashboard, which model to add and which GPIO pin it is on.
-    Blocks until answered, so call it from a worker thread. Returns
-    (profile, pin), or None if cancelled.
-    """
-    profiles = get_manual_registration_profiles()
-    one_wire = get_one_wire_profiles()
-    options = ([model_label(p) for p in profiles]
-               + [one_wire_label(p) for p in one_wire]
-               + [CANCEL_OPTION])
-
-    choice = remote_selector.request_selection(
-        request_id="manual-model",
-        prompt="Add a sensor manually - which model?",
-        options=options,
-    )
-    if choice is None or choice == CANCEL_OPTION:
-        return None
-
-    profile = next((p for p in profiles if model_label(p) == choice), None) \
-        or next((p for p in one_wire if one_wire_label(p) == choice), None)
-    if profile is None:
-        return None
-
-    pin_options = [str(p) for p in free_pins] + [CANCEL_OPTION]
-    if profile.works_without_pin:
-        pin_options = [NO_PIN_OPTION] + pin_options
-
-    pin_choice = remote_selector.request_selection(
-        request_id="manual-pin",
-        prompt=f"Which GPIO pin is the {profile.model}'s data/DO pin connected to?",
-        options=pin_options,
-    )
-    if pin_choice is None or pin_choice == CANCEL_OPTION:
-        return None
-    if pin_choice == NO_PIN_OPTION:
-        return profile, None
-
-    return profile, int(pin_choice)
-__MULSECUBE_EOF__
-write_file "main.py" << '__MULSECUBE_EOF__'
-import signal
-import sys
-
-from data_publisher import DataPublisher
-from remote_selector import wait_for_hmi
-from sensor_monitor import SensorMonitor
-from drivers import dht_driver
-import onewire_bus
-
-WEBAPP_URL = "http://localhost:5000/api/sensor-data"
-
-
-def main():
-    wait_for_hmi()
-
-    # Start from a clean slate: remove any DHT overlays left over from a
-    # previous run, which would otherwise keep the kernel holding those pins.
-    dht_driver.cleanup_stale_overlays()
-    onewire_bus.cleanup_stale()
-
-    publisher = DataPublisher(WEBAPP_URL)
-    monitor = SensorMonitor(publisher)
-
-    # systemd stops a service with SIGTERM, which would normally kill Python
-    # instantly. Turn it into a normal exit so the cleanup below always runs.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-
     try:
-        monitor.run_forever()
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
-    finally:
-        monitor.shutdown()
-        dht_driver.cleanup_stale_overlays()
-        onewire_bus.cleanup_stale()
+        import ports_config
+    except ImportError:
+        return False, []
+
+    if not getattr(ports_config, "USE_PRESENCE_PINS", False):
+        return False, []
+
+    problems = []
+    ports = []
+    used = {}
+
+    for number, raw in enumerate(getattr(ports_config, "PORTS", []), start=1):
+        name = str(raw.get("name") or f"Port {number}")
+        port = {"name": name}
+        for field in ("presence", "data", "adc_channel"):
+            value = raw.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                problems.append(f"{name}: '{field}' must be a whole number (it is {value!r})")
+            port[field] = value
+        for field in ("presence", "data"):
+            pin = port[field]
+            if isinstance(pin, int):
+                if pin in NOT_FOR_PORTS:
+                    problems.append(f"{name}: GPIO{pin} can't be used for '{field}' (reserved for I2C, 1-Wire or HAT identification)")
+                elif pin in used:
+                    problems.append(f"{name}: GPIO{pin} is already used by {used[pin]}")
+                else:
+                    used[pin] = f"{name} ({field})"
+        ports.append(port)
+
+    if not ports:
+        problems.append("the PORTS list is empty")
+
+    channels = [p["adc_channel"] for p in ports if isinstance(p["adc_channel"], int)]
+    if len(channels) != len(set(channels)):
+        problems.append("two ports share an adc_channel")
+
+    if problems:
+        print("Port settings (ports_config.py) have a problem, so presence pins are NOT being used:")
+        for line in problems:
+            print(f"  - {line}")
+        return False, []
+
+    names = ", ".join(f"{p['name']} (presence GPIO{p['presence']}, data GPIO{p['data']})" for p in ports)
+    print(f"Presence pins in use: {names}")
+    return True, ports
+__MULSECUBE_EOF__
+write_file "drivers/digital_output_driver.py" << '__MULSECUBE_EOF__'
+import time
+
+from gpiozero import InputDevice
+
+_pin_devices = {}   # gpio_pin -> InputDevice, kept open across reads for efficiency
+_presence_devices = {}   # presence pin -> InputDevice with the Pi's internal pull-up switched on
+_reported_errors = set()
 
 
-if __name__ == "__main__":
-    main()
+def read_raw(gpio_pin):
+    """
+    Reads a simple HIGH/LOW digital threshold output - e.g. an MQ-series gas
+    sensor's DO pin, which just says "above/below threshold", not a real
+    protocol. Returns 1 if triggered, 0 if not, or None on error.
+    """
+    try:
+        if gpio_pin not in _pin_devices:
+            _pin_devices[gpio_pin] = InputDevice(gpio_pin, pull_up=False)
+        return int(_pin_devices[gpio_pin].value)
+    except Exception as e:
+        print(f"  MQ-8 read error on GPIO{gpio_pin}: {e}")
+        return None
+
+
+def release(gpio_pin):
+    """Closes and forgets the handle on this pin (called when the sensor is unplugged)."""
+    device = _pin_devices.pop(gpio_pin, None)
+    if device is not None:
+        try:
+            device.close()
+        except Exception:
+            pass
+
+
+def read_presence(pin):
+    """
+    True if something is plugged into the port, False if not, None if the pin can't be
+    read reliably. The plug joins the presence wire to ground, so a plugged-in port reads
+    LOW, and the Pi's internal pull-up makes an empty port read HIGH.
+    """
+    try:
+        device = _presence_devices.get(pin)
+        if device is None:
+            device = _presence_devices[pin] = InputDevice(pin, pull_up=True)
+            time.sleep(0.05)                    # let the pull-up settle
+        samples = []
+        for _ in range(3):
+            samples.append(bool(device.is_active))      # is_active = the pin is LOW
+            time.sleep(0.01)
+    except Exception as e:
+        message = f"{type(e).__name__}: {e}"
+        if (pin, message) not in _reported_errors:
+            _reported_errors.add((pin, message))
+            print(f"  Presence pin GPIO{pin} problem: {message}")
+        return None
+    return samples[0] if all(x == samples[0] for x in samples) else None
+
+
+def release_presence_pins():
+    for pin in list(_presence_devices):
+        device = _presence_devices.pop(pin)
+        try:
+            device.close()
+        except Exception:
+            pass
+
+
+def has_open_pins():
+    """True while any pin is being held open for continuous reading."""
+    return bool(_pin_devices) or bool(_presence_devices)
+__MULSECUBE_EOF__
+write_file "profiles/mq8_profile.py" << '__MULSECUBE_EOF__'
+from sensor_profile import SensorProfile
+from sensor_measurement import SensorMeasurement
+from drivers import digital_output_driver, mq8_esp32_driver
+
+
+def _read(device_address):
+    # device_address is {"adc_channel": n} when the MQ-8 sits in a numbered port (analog only),
+    # or the GPIO number of its DO wire, or None if there is no DO wire (default channel).
+    if isinstance(device_address, dict):
+        alarm, channel = None, device_address.get("adc_channel")
+    else:
+        alarm = digital_output_driver.read_raw(device_address) if device_address is not None else None
+        channel = None
+    ppm = mq8_esp32_driver.read_ppm(channel)
+    if alarm is None and ppm is None:
+        return None
+    result = {}
+    if ppm is not None:
+        result["hydrogen_ppm"] = ppm
+    if alarm is not None:
+        result["gas_alarm_triggered"] = alarm
+    return result
+
+
+PROFILE = SensorProfile(
+    model="MQ-8",
+    protocol="Analog (AO via ESP32) + Digital Threshold (DO)",
+    is_analog=True,
+    identifier_type="manual_gpio",
+    identifier=None,
+    read_fn=_read,
+    release_fn=digital_output_driver.release,
+    works_without_pin=True,
+    measurements=[
+        SensorMeasurement("hydrogen_ppm", "ppm", 100, 10000),
+        SensorMeasurement("gas_alarm_triggered", "bool", 0, 1),
+    ],
+)
 __MULSECUBE_EOF__
 
+if [ -f ports_config.py ]; then
+  echo "Keeping your existing ports_config.py (your wiring settings are not touched)."
+else
+  echo "Creating ports_config.py (presence pins are OFF until you switch them on) ..."
+  write_file "ports_config.py" << '__MULSECUBE_EOF__'
+"""
+Your port wiring. Edit this to match your schematic, then change
+USE_PRESENCE_PINS to True and restart:   sudo systemctl restart mulsecube-main
+
+Each port has three things:
+  presence     the GPIO of the port's presence wire. The plug joins this wire to ground, so a
+               plugged-in port reads LOW. The Pi's own built-in pull-up makes an empty port
+               read HIGH - no resistor and no extra wire is needed.
+  data         the GPIO of the port's data wire (DHT, DS18B20, ...)
+  adc_channel  which ESP32 analog input that same data wire also feeds (0, 1 or 2), so an
+               analog sensor such as the MQ-8 can be read from any port.
+
+While USE_PRESENCE_PINS is False, the program behaves as before: it looks at the pins
+themselves to guess when something is plugged in.
+"""
+
+USE_PRESENCE_PINS = False
+
+PORTS = [
+    {"name": "Port 1", "presence": 9,  "data": 23, "adc_channel": 0},
+    {"name": "Port 2", "presence": 10, "data": 24, "adc_channel": 1},
+    {"name": "Port 3", "presence": 11, "data": 25, "adc_channel": 2},
+]
+__MULSECUBE_EOF__
+fi
+
+echo "Updating the MQ-8 driver (your calibration value is kept) ..."
+if ! python3 - << 'INNERPY'
+import sys
+path = "drivers/mq8_esp32_driver.py"
+s = open(path).read()
+if "def read_ppm(channel=None):" in s:
+    print("  already updated.")
+    sys.exit(0)
+head, sep, tail = s.partition("def read_ppm():")
+old = "voltage = esp32_serial_driver.read_channel(MQ8_CHANNEL)"
+if not sep or old not in tail:
+    print("  PROBLEM: the MQ-8 driver doesn't look the way this update expects.")
+    sys.exit(1)
+tail = tail.replace(old, "voltage = esp32_serial_driver.read_channel(MQ8_CHANNEL if channel is None else channel)", 1)
+open(path, "w").write(head + "def read_ppm(channel=None):" + tail)
+print("  updated.")
+INNERPY
+then
+  restore_backup
+  exit 1
+fi
+fix_owner drivers/mq8_esp32_driver.py
+
+echo
 echo "Checking every file ..."
-for f in "${FILES[@]}"; do
+for f in "${FILES[@]}" ports_config.py drivers/mq8_esp32_driver.py; do
   if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" 2>/tmp/mulsecube_check.err; then
     echo "PROBLEM in $f:"
     cat /tmp/mulsecube_check.err
@@ -904,11 +917,12 @@ if systemctl list-unit-files mulsecube-main.service 2>/dev/null | grep -q mulsec
   echo "Restarting the sensor service (may ask for your password) ..."
   if [ "$EUID" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
   $SUDO systemctl restart mulsecube-main.service
-  echo "Restarted.   Watch it work:   sudo journalctl -u mulsecube-main -f"
+  echo "Restarted."
 else
   echo "The auto-start services aren't installed, so nothing was restarted."
-  echo "Run by hand:   python3 hmi_server.py     and in another terminal:   sudo python3 main.py"
 fi
 
 echo
 echo "Update complete. Your originals are in $BACKUP_DIR/ if you ever need them."
+echo "Presence pins are still OFF. When your ports are wired, edit ports_config.py,"
+echo "set USE_PRESENCE_PINS = True, and restart:   sudo systemctl restart mulsecube-main"

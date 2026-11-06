@@ -1,5 +1,7 @@
 import time
 from collections import deque
+import socket
+
 from flask import Flask, request, jsonify, send_file
 
 app = Flask(__name__)
@@ -1106,5 +1108,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+def _listen_host():
+    """
+    '::' accepts both IPv6 and IPv4 connections (on Linux), so the dashboard opens
+    whether a browser resolves pi5.local to an IPv6 or an IPv4 address. If this
+    system can't do that, fall back to IPv4 only, as before.
+    """
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::", 0))
+            if probe.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0:
+                return "::"
+    except (OSError, AttributeError):
+        pass
+    return "0.0.0.0"
+
+
+def serve():
+    host = _listen_host()
+    try:
+        app.run(host=host, port=5000)
+    except OSError:
+        if host == "0.0.0.0":
+            raise
+        print("Could not listen on IPv6 - falling back to IPv4 only.")
+        app.run(host="0.0.0.0", port=5000)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    serve()

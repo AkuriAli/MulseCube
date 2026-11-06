@@ -1,12 +1,13 @@
 import itertools
 import onewire_bus
+import ports as port_settings
 import queue
 import threading
 import time
 
 import gpio_scanner
 import remote_selector
-from drivers import ds18b20_driver, i2c_bus_driver
+from drivers import digital_output_driver, ds18b20_driver, i2c_bus_driver
 from profile_registry import (
     find_by_family_code,
     get_i2c_profiles,
@@ -23,6 +24,9 @@ from sensor_detector import (
     one_wire_help,
     one_wire_label,
 )
+
+
+I2C_OPTION = "I2C sensor (found automatically)"
 
 
 class SensorMonitor:
@@ -47,6 +51,10 @@ class SensorMonitor:
     UNPLUG_SCANS = 2                # LOW scans in a row = a waiting/skipped pin was unplugged
     SELF_ID_MISSES = 2              # missed checks in a row = an I2C/1-Wire sensor is gone
     READ_FAILURES_BEFORE_REMOVE = 5 # failed reads in a row = a GPIO sensor is gone
+    PORT_SCAN_INTERVAL = 1.0        # seconds between looks at the presence pins
+    PLUG_CONFIRM_READS = 2          # presence readings in a row before a plug / unplug is believed
+    I2C_GRACE_SECONDS = 4           # after a plug-in, how long to wait for an I2C sensor to answer
+    I2C_MATCH_SECONDS = 8           # an I2C sensor that appeared this close to a plug-in belongs to it
     BUS_EMPTY_CHECKS = 3            # cycles with no sensor left on a 1-Wire bus before it is removed
     READ_TIMEOUT = 5                # seconds a single sensor read may take before we move on
 
@@ -71,6 +79,12 @@ class SensorMonitor:
         self.manual_results = queue.Queue() # (profile, pin) from the manual-add thread
         self.manual_thread = None
         self._last_gpio_scan = 0.0
+        self._added_at = {}                 # sensor key -> when it was connected
+        self._last_port_scan = 0.0
+        self.use_presence, port_list = port_settings.load()
+        self.ports = [dict(p, state="empty", plugged_reads=0, unplugged_reads=0, since=0.0, owner=None)
+                      for p in port_list]
+        self.port_by_data = {p["data"]: p for p in self.ports}
 
     # ------------------------------------------------------------ helpers --
 
@@ -81,7 +95,8 @@ class SensorMonitor:
         if kind == "manual":
             return f"{model} (analog reading only)"
         if kind == "gpio":
-            return f"{model} on GPIO{where}"
+            port = self.port_by_data.get(where) if self.use_presence else None
+            return f"{model} in {port['name']}" if port else f"{model} on GPIO{where}"
         if kind == "i2c":
             return f"{model} on I2C {hex(where)}"
         return f"{model} on 1-Wire {where}"
@@ -108,6 +123,7 @@ class SensorMonitor:
         self.misses.pop(key, None)
         self.read_failures.pop(key, None)
         self.ever_read.discard(key)
+        self._added_at[key] = time.time()
         print(f"+ Sensor connected: {self._describe(key)}")
 
     def _remove(self, key, reason, notify=True):
@@ -117,6 +133,7 @@ class SensorMonitor:
         self.read_failures.pop(key, None)
         self.ever_read.discard(key)
         self._readers.pop(key, None)
+        self._added_at.pop(key, None)
         if sensor is None:
             return
 
@@ -230,6 +247,10 @@ class SensorMonitor:
             self.probing.discard(pin)
             explicit = pin in self.explicit_probes
             self.explicit_probes.discard(pin)
+            port = self.port_by_data.get(pin) if self.use_presence else None
+            if port is not None and port["state"] == "empty":
+                onewire_bus.release(pin)        # it was unplugged while we were checking
+                continue
             if found:
                 print(f"  GPIO{pin}: found {', '.join(found)} - the 1-Wire bus stays.")
                 self.bus_empty_counts[pin] = 0
@@ -252,6 +273,74 @@ class SensorMonitor:
                 onewire_bus.release(pin)
                 self.bus_empty_counts.pop(pin, None)
 
+    # ------------------------------------------------ ports (presence pins) --
+
+    def _pin_label(self, pin):
+        port = self.port_by_data.get(pin) if self.use_presence else None
+        return f"{port['name']} (GPIO{pin})" if port else f"GPIO{pin}"
+
+    def _port_owned_keys(self):
+        return {p["owner"]["key"] for p in self.ports if p["owner"]}
+
+    def _scan_ports(self):
+        """Read each port's presence pin. A plug / unplug is only believed after a few readings in a row."""
+        for port in self.ports:
+            plugged = digital_output_driver.read_presence(port["presence"])
+            if plugged is None:
+                continue
+            if plugged:
+                port["unplugged_reads"] = 0
+                port["plugged_reads"] += 1
+                if port["state"] == "empty" and port["plugged_reads"] >= self.PLUG_CONFIRM_READS:
+                    self._port_plugged(port)
+            else:
+                port["plugged_reads"] = 0
+                port["unplugged_reads"] += 1
+                if port["state"] != "empty" and port["unplugged_reads"] >= self.PLUG_CONFIRM_READS:
+                    self._port_unplugged(port)
+        self._advance_ports()
+
+    def _port_plugged(self, port):
+        port["state"] = "waiting"
+        port["since"] = time.time()
+        print(f"  {port['name']}: something was plugged in.")
+
+    def _advance_ports(self):
+        """
+        A newly plugged port first waits a few seconds: an I2C sensor announces itself on the
+        shared bus, so if exactly one new I2C sensor appeared at the same moment, it is this
+        port's. Otherwise the port's data wire is checked for a DS18B20, and failing that the
+        person is asked which sensor it is.
+        """
+        now = time.time()
+        waiting = [p for p in self.ports if p["state"] == "waiting"]
+        for port in waiting:
+            owned = self._port_owned_keys()
+            candidates = [k for k in self.sensors if k[0] == "i2c" and k not in owned
+                          and abs(self._added_at.get(k, 0) - port["since"]) <= self.I2C_MATCH_SECONDS]
+            crowded = [p for p in waiting if p is not port
+                       and abs(p["since"] - port["since"]) <= self.I2C_MATCH_SECONDS]
+            if len(candidates) == 1 and not crowded:
+                port["owner"] = {"kind": "i2c", "key": candidates[0]}
+                port["state"] = "occupied"
+                print(f"  {port['name']}: {self._describe(candidates[0])}")
+            elif now - port["since"] >= self.I2C_GRACE_SECONDS:
+                port["state"] = "identifying"
+                self._start_probe(port["data"])
+
+    def _port_unplugged(self, port):
+        """Everything tied to this port goes: sensors, 1-Wire bus, open questions and messages."""
+        data = port["data"]
+        print(f"  {port['name']}: unplugged.")
+        self._forget_pin(data)
+        if data in onewire_bus.owned_pins():
+            onewire_bus.release(data)
+        key = ("gpio", data)
+        if key in self.sensors:
+            self._remove(key, "unplugged")
+        port["state"] = "empty"
+        port["owner"] = None
+
     def _forget_pin(self, pin):
         """The pin went quiet: withdraw any open question and reset what we remember about it."""
         entry = self.pending.pop(pin, None)
@@ -271,9 +360,11 @@ class SensorMonitor:
         profiles = get_manual_registration_profiles()
         options = ([model_label(p) for p in profiles]
                    + [one_wire_label(p) for p in get_one_wire_profiles()]
+                   + ([I2C_OPTION] if self.use_presence else [])
                    + [SKIP_OPTION])
-        prompt = f"Something was plugged into GPIO{pin}. Which sensor is it?"
-        print(f"? Something detected on GPIO{pin}")
+        label = self._pin_label(pin)
+        prompt = f"Something was plugged into {label}. Which sensor is it?"
+        print(f"? Something detected on {label}")
 
         def ask():
             choice = remote_selector.request_selection(
@@ -329,6 +420,10 @@ class SensorMonitor:
                 self.skipped.add(pin)
                 continue
 
+            if choice == I2C_OPTION:
+                print(f"  {self._pin_label(pin)}: noted as an I2C sensor - it appears by itself once it answers.")
+                continue
+
             one_wire = next((p for p in get_one_wire_profiles() if one_wire_label(p) == choice), None)
             if one_wire is not None:
                 self._start_probe(pin, explicit=True)       # they say it's a DS18B20: try again
@@ -348,6 +443,11 @@ class SensorMonitor:
             print(f"  Could not set up {profile.model} on GPIO{pin} - "
                   f"unplug and replug it to try again.")
             return
+        port = self.port_by_data.get(pin) if self.use_presence else None
+        if port is not None and profile.works_without_pin:
+            # an analog sensor in a numbered port: read the ESP32 channel that port's data wire feeds
+            sensor.device_address = {"adc_channel": port["adc_channel"]}
+            sensor.gpio_ports = []
         self._add(("gpio", pin), sensor)
 
     # ------------------------------------------- manual add (dashboard button) --
@@ -471,7 +571,11 @@ class SensorMonitor:
         self._process_probe_results()
 
         now = time.time()
-        if now - self._last_gpio_scan >= self.GPIO_SCAN_INTERVAL:
+        if self.use_presence:
+            if now - self._last_port_scan >= self.PORT_SCAN_INTERVAL:
+                self._scan_ports()
+                self._last_port_scan = time.time()
+        elif now - self._last_gpio_scan >= self.GPIO_SCAN_INTERVAL:
             self._scan_gpio()
             self._last_gpio_scan = time.time()
 
@@ -497,3 +601,4 @@ class SensorMonitor:
             self._remove(key, "shutting down", notify=False)
         onewire_bus.release_all()
         self.probing.clear()
+        digital_output_driver.release_presence_pins()

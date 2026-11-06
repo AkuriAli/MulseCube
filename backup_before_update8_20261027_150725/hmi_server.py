@@ -1,8 +1,25 @@
 import time
 from collections import deque
-from flask import Flask, request, jsonify
+import socket
+
+from flask import Flask, request, jsonify, send_file
 
 app = Flask(__name__)
+
+# Recording is an extra: if it can't start (e.g. the data folder isn't writable) the
+# live dashboard must still work, so any problem here is reported and then ignored.
+try:
+    from database import Database
+    from recorder import Recorder, RecorderError
+    recorder = Recorder(Database())
+    if recorder.resumed:
+        print("Recording was in progress when the server last stopped - carrying on with it.")
+except Exception as e:
+    print(f"WARNING: recording is not available: {e}")
+    recorder = None
+
+    class RecorderError(Exception):
+        pass
 
 MAX_HISTORY_POINTS = 120   # ~4 minutes of history at a 2s reporting interval
 
@@ -42,6 +59,8 @@ def receive_data():
         "min": data.get("min"),
         "max": data.get("max"),
     }
+    if recorder is not None:
+        recorder.ingest(data)
 
     history_key = f"{model}|{measurement_type}"
     if history_key not in reading_history:
@@ -124,6 +143,8 @@ def sensor_removed():
     latest_readings.pop(model, None)
     for key in [k for k in reading_history if k.startswith(f"{model}|")]:
         del reading_history[key]
+    if recorder is not None:
+        recorder.forget_model(model)
     return jsonify({"status": "ok"})
 
 
@@ -142,6 +163,70 @@ def manual_add():
 @app.route("/api/pending-selections")
 def get_pending_selections():
     return jsonify({rid: v for rid, v in pending_selections.items() if not v["answered"]})
+
+
+# ---- Recording and Excel download ------------------------------------------
+
+def _recording_unavailable():
+    return jsonify({"error": "Recording isn't available on this system - see the dashboard server's log."}), 503
+
+
+@app.route("/api/recording")
+def recording_status():
+    if recorder is None:
+        return _recording_unavailable()
+    return jsonify(recorder.status())
+
+
+@app.route("/api/recording/start", methods=["POST"])
+def recording_start():
+    if recorder is None:
+        return _recording_unavailable()
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(recorder.start(data.get("interval", 10), data.get("name")))
+    except RecorderError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/recording/stop", methods=["POST"])
+def recording_stop():
+    if recorder is None:
+        return _recording_unavailable()
+    return jsonify(recorder.stop())
+
+
+@app.route("/api/recordings")
+def recordings_list():
+    if recorder is None:
+        return _recording_unavailable()
+    active = recorder.status().get("session_id")
+    sessions = recorder.db.list_sessions()
+    for s in sessions:
+        s["recording"] = (s["id"] == active)
+    return jsonify(sessions)
+
+
+@app.route("/api/recordings/<int:session_id>/export.xlsx")
+def recording_export(session_id):
+    if recorder is None:
+        return _recording_unavailable()
+    try:
+        from exporter import build_workbook
+    except ImportError:
+        return jsonify({"error": "Excel export needs the 'openpyxl' package. On the Pi run: "
+                                 "pip install openpyxl --break-system-packages   "
+                                 "then restart the dashboard service."}), 503
+    try:
+        workbook, filename = build_workbook(recorder.db, session_id)
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    return send_file(
+        workbook,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @app.route("/")
@@ -235,6 +320,89 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
 
   #add-sensor:hover { border-color: var(--live); }
+
+  #recorder {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem 2rem;
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-top: 3px solid var(--hairline);
+    padding: 0.9rem 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  #recorder.recording { border-top-color: var(--stale); }
+
+  .rec-group {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .rec-field {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+  }
+
+  #recorder select,
+  #recorder button {
+    font-family: inherit;
+    font-size: 0.85rem;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    padding: 0.4rem 0.7rem;
+    cursor: pointer;
+  }
+
+  #recorder select { max-width: 22rem; }
+
+  #recorder button:hover:not(:disabled),
+  #recorder select:hover:not(:disabled) { border-color: var(--live); }
+
+  #recorder button:disabled,
+  #recorder select:disabled { opacity: 0.5; cursor: default; }
+
+  #rec-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-width: 10rem;
+  }
+
+  #rec-toggle .dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    background: var(--stale);
+  }
+
+  #recorder.recording #rec-toggle { border-color: var(--stale); }
+  #recorder.recording #rec-toggle .dot { border-radius: 0; animation: rec-pulse 1.6s ease-in-out infinite; }
+
+  @keyframes rec-pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    #recorder.recording #rec-toggle .dot { animation: none; }
+  }
+
+  #rec-status {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+  }
+
+  #recorder.recording #rec-status { color: var(--stale); }
+
+  #rec-message { font-size: 0.8rem; color: var(--ink-soft); }
+  #rec-message.error { color: var(--stale); }
 
   #grid {
     display: grid;
@@ -366,6 +534,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button id="add-sensor" type="button">+ Add sensor manually</button>
   </div>
 </header>
+
+<section id="recorder">
+  <div class="rec-group">
+    <button id="rec-toggle" type="button"><span class="dot"></span><span id="rec-toggle-label">Record</span></button>
+    <label class="rec-field">Save a reading every
+      <select id="rec-interval">
+        <option value="2">2 seconds</option>
+        <option value="5">5 seconds</option>
+        <option value="10" selected>10 seconds</option>
+        <option value="30">30 seconds</option>
+        <option value="60">1 minute</option>
+        <option value="300">5 minutes</option>
+      </select>
+    </label>
+    <span id="rec-status">Not recording</span>
+  </div>
+  <div class="rec-group">
+    <label class="rec-field">Recording
+      <select id="rec-session"><option value="">None yet</option></select>
+    </label>
+    <button id="rec-download" type="button" disabled>Download Excel</button>
+    <span id="rec-message"></span>
+  </div>
+</section>
 
 <div id="grid"></div>
 <div id="empty" style="display:none;">No sensors reporting yet. Connect a sensor and confirm it on the dashboard to see live values here.</div>
@@ -742,6 +934,170 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     } catch (e) { /* ignore */ }
   });
 
+  // ---- Recording and Excel download ----
+  const rec = {recording: false, sessionId: null, userPicked: false, sessionIds: 'none', busy: false};
+  const recEl = {
+    box: document.getElementById('recorder'),
+    toggle: document.getElementById('rec-toggle'),
+    toggleLabel: document.getElementById('rec-toggle-label'),
+    interval: document.getElementById('rec-interval'),
+    status: document.getElementById('rec-status'),
+    session: document.getElementById('rec-session'),
+    download: document.getElementById('rec-download'),
+    message: document.getElementById('rec-message'),
+  };
+
+  function recSay(text, isError) {
+    recEl.message.textContent = text || '';
+    recEl.message.className = isError ? 'error' : '';
+  }
+
+  function formatDuration(seconds) {
+    seconds = Math.max(0, Math.round(seconds));
+    const pad = n => String(n).padStart(2, '0');
+    return pad(Math.floor(seconds / 3600)) + ':' + pad(Math.floor((seconds % 3600) / 60)) + ':' + pad(seconds % 60);
+  }
+
+  function describeSession(s) {
+    const length = s.recording ? 'recording now'
+      : (s.last_ts ? formatDuration(s.last_ts - s.started) : 'no data');
+    return s.name + ' \u00b7 ' + s.sample_count + ' sample' + (s.sample_count === 1 ? '' : 's') + ' \u00b7 ' + length;
+  }
+
+  async function recFetch(url, options) {
+    const res = await fetch(url, options);
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* not JSON */ }
+    return {ok: res.ok, body: body};
+  }
+
+  async function refreshRecorder() {
+    let status, sessions;
+    try {
+      status = await recFetch('/api/recording');
+      sessions = await recFetch('/api/recordings');
+    } catch (e) {
+      return;                                   // server unreachable: leave the display as it is
+    }
+
+    if (!status.ok) {
+      recEl.status.textContent = 'Recording unavailable';
+      recEl.toggle.disabled = true;
+      recEl.download.disabled = true;
+      recSay(status.body && status.body.error ? status.body.error : '', true);
+      return;
+    }
+
+    const s = status.body;
+    rec.recording = !!s.recording;
+    recEl.box.classList.toggle('recording', rec.recording);
+    recEl.toggleLabel.textContent = rec.recording ? 'Stop recording' : 'Record';
+    recEl.interval.disabled = rec.recording;
+    recEl.toggle.disabled = rec.busy;
+
+    if (rec.recording) {
+      recEl.status.textContent = 'Recording ' + formatDuration(s.elapsed) + ' \u00b7 '
+        + s.samples + ' sample' + (s.samples === 1 ? '' : 's');
+      if (rec.sessionId !== s.session_id) { rec.sessionId = s.session_id; rec.userPicked = false; }
+      if (Array.from(recEl.interval.options).some(o => o.value === String(s.interval))) {
+        recEl.interval.value = String(s.interval);
+      }
+    } else {
+      recEl.status.textContent = 'Not recording';
+      rec.sessionId = null;
+    }
+    if (s.error) recSay('Problem saving readings: ' + s.error, true);
+
+    const list = sessions.ok ? sessions.body : [];
+    if (!list.length) {
+      if (rec.sessionIds !== 'none') {
+        recEl.session.innerHTML = '<option value="">None yet</option>';
+        rec.sessionIds = 'none';
+      }
+    } else {
+      const ids = list.map(x => x.id).join(',');
+      if (ids !== rec.sessionIds) {
+        const previous = recEl.session.value;
+        recEl.session.innerHTML = '';
+        list.forEach(x => {
+          const option = document.createElement('option');
+          option.value = String(x.id);
+          option.textContent = describeSession(x);
+          recEl.session.appendChild(option);
+        });
+        rec.sessionIds = ids;
+        const keep = rec.userPicked && list.some(x => String(x.id) === previous);
+        recEl.session.value = keep ? previous
+          : (rec.sessionId ? String(rec.sessionId) : String(list[0].id));
+      } else {
+        Array.from(recEl.session.options).forEach((option, i) => { option.textContent = describeSession(list[i]); });
+      }
+    }
+    recEl.download.disabled = rec.busy || !recEl.session.value;
+  }
+
+  recEl.session.addEventListener('change', () => {
+    rec.userPicked = true;
+    recEl.download.disabled = rec.busy || !recEl.session.value;
+  });
+
+  recEl.toggle.addEventListener('click', async () => {
+    if (rec.busy) return;
+    rec.busy = true;
+    recEl.toggle.disabled = true;
+    recSay('');
+    try {
+      const headers = {'Content-Type': 'application/json'};
+      const result = rec.recording
+        ? await recFetch('/api/recording/stop', {method: 'POST', headers: headers, body: '{}'})
+        : await recFetch('/api/recording/start', {method: 'POST', headers: headers,
+            body: JSON.stringify({interval: Number(recEl.interval.value)})});
+      if (!result.ok) recSay(result.body && result.body.error ? result.body.error : 'That did not work.', true);
+    } catch (e) {
+      recSay('Could not reach the dashboard server.', true);
+    }
+    rec.busy = false;
+    await refreshRecorder();
+  });
+
+  recEl.download.addEventListener('click', async () => {
+    const id = recEl.session.value;
+    if (!id || rec.busy) return;
+    rec.busy = true;
+    recEl.download.disabled = true;
+    recSay('Preparing the Excel file...');
+    try {
+      const res = await fetch('/api/recordings/' + id + '/export.xlsx');
+      if (!res.ok) {
+        let message = 'The download failed.';
+        try { const body = await res.json(); if (body.error) message = body.error; } catch (e) { /* keep default */ }
+        recSay(message, true);
+      } else {
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let name = 'mulsecube.xlsx';
+        const at = disposition.indexOf('filename=');
+        if (at !== -1) name = disposition.slice(at + 9).split(';')[0].split('"').join('').trim();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        recSay('Downloaded ' + name);
+      }
+    } catch (e) {
+      recSay('Could not reach the dashboard server.', true);
+    }
+    rec.busy = false;
+    recEl.download.disabled = !recEl.session.value;
+  });
+
+  refreshRecorder();
+  setInterval(refreshRecorder, 1000);
+
   refresh();
   setInterval(refresh, 2000);
   checkPendingSelections();
@@ -752,5 +1108,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+def _listen_host():
+    """
+    '::' accepts both IPv6 and IPv4 connections (on Linux), so the dashboard opens
+    whether a browser resolves pi5.local to an IPv6 or an IPv4 address. If this
+    system can't do that, fall back to IPv4 only, as before.
+    """
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::", 0))
+            if probe.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0:
+                return "::"
+    except (OSError, AttributeError):
+        pass
+    return "0.0.0.0"
+
+
+def serve():
+    host = _listen_host()
+    try:
+        app.run(host=host, port=5000)
+    except OSError:
+        if host == "0.0.0.0":
+            raise
+        print("Could not listen on IPv6 - falling back to IPv4 only.")
+        app.run(host="0.0.0.0", port=5000)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    serve()

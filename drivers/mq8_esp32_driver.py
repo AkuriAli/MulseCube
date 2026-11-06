@@ -40,7 +40,7 @@ def calibrate_ro(samples=50):
     return sum(readings) / len(readings)
 
 
-def read_ppm():
+def read_ppm(channel=None):
     """
     Returns hydrogen concentration in ppm, or None if not yet calibrated,
     the ESP32 isn't sending data, or the read failed.
@@ -48,7 +48,7 @@ def read_ppm():
     if RO_CLEAN_AIR is None or CURVE_M is None or CURVE_B is None:
         return None
 
-    voltage = esp32_serial_driver.read_channel(MQ8_CHANNEL)
+    voltage = esp32_serial_driver.read_channel(MQ8_CHANNEL if channel is None else channel)
     rs = _calculate_rs(voltage)
     if rs is None:
         return None
